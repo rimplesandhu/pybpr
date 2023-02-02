@@ -1,0 +1,16 @@
+name: bpr_env
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - tqdm
+  - ipykernel
+  - pyarrow
+  - python=3.10
+  - scikit-learn
+  - matplotlib
+  - pandas
+  - scipy
+  - numpy
+  - pathos
+
