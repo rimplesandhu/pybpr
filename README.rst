@@ -4,11 +4,10 @@ Bayesian Personalized Ranking toolkit
 
 To Do
 -----------
-* Implement weighted ALS and check the affect of various forms
-of negative sampling in WALS
+
+* Implement weighted ALS and check the affect of various forms of negative sampling in WALS
 * Check the affect of varios forms of negative sampling on BPR
 * Implement viewed/clicked version of BPR
-
 
 Installation
 --------------
