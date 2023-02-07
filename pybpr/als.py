@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 from scipy.sparse import csr_matrix, dok_matrix
 from scipy.sparse.linalg import inv
-from sklearn.metrics import mean_squared_error
+from .utils import compute_mse
 #pylint: disable=invalid-name
 
 
@@ -32,28 +32,30 @@ class ALS:
 
     def __init__(
         self,
-        num_iters: int,
         num_features: int,
         num_users: int,
         num_items: int,
         reg_lambda: float
     ):
         self.reg_lambda = reg_lambda
-        self.num_iters = num_iters
         self.num_features = num_features
-        istr = 'ALS: # of features are more than min(num_items, num_users)!'
-        assert num_features < min(num_users, num_items), istr
         self.num_users = num_users
         self.num_items = num_items
-        self.U = np.random.random((num_users, self.num_features))
-        self.V = np.random.random((num_items, self.num_features))
-        self.test_mse_record = []
-        self.train_mse_record = []
+        istr = 'ALS: # of features are more than min(num_items, num_users)!'
+        assert num_features < min(num_users, num_items), istr
+        self.user_mat = None
+        self.item_mat = None
+        self.user_item_mat = None
+        self.test_mse = []
+        self.train_mse = []
 
     def fit(
         self,
         R_train,
-        R_test=None
+        R_test=None,
+        num_iters: int = 10,
+        store_mse: bool = True,
+        seed: int | None = None
     ):
         """
         pass in training and testing at the same time to record
@@ -62,29 +64,24 @@ class ALS:
         """
         # record the training and testing mse for every iteration
         # to show convergence later (usually, not worth it for production)
-        for _ in range(self.num_iters):
-            self.U = self.update(R_train, self.V)
-            self.V = self.update(R_train.T, self.U)
-            R_pred = self.predict()
-            # print(R_pred.shape)
-            self.train_mse_record.append(self.compute_mse(R_train, R_pred))
-            if R_test is not None:
-                self.test_mse_record.append(self.compute_mse(R_test, R_pred))
+        self.test_mse = []
+        self.train_mse = []
+        np.random.seed(seed=seed)
+        self.user_mat = np.random.random(
+            (self.num_users, self.num_features))
+        self.item_mat = np.random.random((self.num_items, self.num_features))
+        for _ in range(num_iters):
+            self.user_mat = self.update(R_train, self.item_mat)
+            self.item_mat = self.update(R_train.T, self.user_mat)
+            self.user_item_mat = self.user_mat.dot(self.item_mat.T)
+            if store_mse:
+                self.train_mse.append(compute_mse(R_train, self.user_item_mat))
+                if R_test is not None:
+                    self.test_mse.append(compute_mse(
+                        R_test, self.user_item_mat))
 
     def update(self, R_mat, Mfixed):
         """ALS update step"""
         Amat = Mfixed.T.dot(Mfixed)
         Amat += np.eye(self.num_features) * self.reg_lambda
-        # print(Amat.shape)
         return R_mat.dot(Mfixed).dot(np.linalg.inv(Amat))
-
-    def predict(self):
-        """Predicts user-item interaction matrix"""
-        return self.U.dot(self.V.T)
-
-    @staticmethod
-    def compute_mse(y_true, y_pred):
-        """ignore zero terms prior to comparing the mse"""
-        mask = np.nonzero(y_true)
-        mse = mean_squared_error(np.array(y_true[mask]).ravel(), y_pred[mask])
-        return mse
