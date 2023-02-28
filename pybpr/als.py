@@ -1,87 +1,164 @@
 """Base class for implementing matrix factorization"""
-from typing import List
-import pandas as pd
+from functools import partial
+import pathos.multiprocessing as mp
 import numpy as np
-from scipy.sparse import csr_matrix, dok_matrix
-from scipy.sparse.linalg import inv
-from .utils import compute_mse
-#pylint: disable=invalid-name
+import scipy.sparse as ss
+from .utils import get_interaction_weights
+# pylint: disable=invalid-name
 
 
-class ALS:
+class MF_ALS:
     """
-    Alternating Least Square
-
-    Train a matrix factorization model using Alternating Least Squares
-    to predict empty entries in a matrix
-
-    Parameters
-    ----------
-    n_iters : int
-        number of iterations to train the algorithm
-
-    n_factors : int
-        number of latent factors to use in matrix 
-        factorization model, some machine-learning libraries
-        denote this as rank
-
-    reg : float
-        regularization term for item/user latent factors,
-        since lambda is a keyword in python we use reg instead
+    Alternating Least Square solution to Matrix Factorization
     """
 
     def __init__(
         self,
         num_features: int,
-        num_users: int,
-        num_items: int,
-        reg_lambda: float
+        reg_lambda: float,
+        num_iters: int,
+        initial_std: float,
+        ncores: int = 8,
+        seed: int | None = None,
     ):
         self.reg_lambda = reg_lambda
         self.num_features = num_features
-        self.num_users = num_users
-        self.num_items = num_items
-        istr = 'ALS: # of features are more than min(num_items, num_users)!'
-        assert num_features < min(num_users, num_items), istr
+        self.num_iters = num_iters
+        self.seed = seed
+        self.ncores = ncores
+        self.initial_std = initial_std
         self.user_mat = None
         self.item_mat = None
-        self.user_item_mat = None
-        self.test_mse = []
-        self.train_mse = []
+        self.reg_mat = np.eye(self.num_features) * self.reg_lambda
 
-    def fit(
-        self,
-        R_train,
-        R_test=None,
-        num_iters: int = 10,
-        store_mse: bool = True,
-        seed: int | None = None
-    ):
+    def fit(self, train_mat):
         """
-        pass in training and testing at the same time to record
-        model convergence, assuming both dataset is in the form
-        of User x Item matrix with cells as ratings
+        Fit function
         """
         # record the training and testing mse for every iteration
         # to show convergence later (usually, not worth it for production)
-        self.test_mse = []
-        self.train_mse = []
-        np.random.seed(seed=seed)
-        self.user_mat = np.random.random(
-            (self.num_users, self.num_features))
-        self.item_mat = np.random.random((self.num_items, self.num_features))
-        for _ in range(num_iters):
-            self.user_mat = self.update(R_train, self.item_mat)
-            self.item_mat = self.update(R_train.T, self.user_mat)
-            self.user_item_mat = self.user_mat.dot(self.item_mat.T)
-            if store_mse:
-                self.train_mse.append(compute_mse(R_train, self.user_item_mat))
-                if R_test is not None:
-                    self.test_mse.append(compute_mse(
-                        R_test, self.user_item_mat))
+        rstate = np.random.RandomState(seed=self.seed)
+        _, num_items = train_mat.shape
+        self.item_mat = rstate.normal(
+            loc=0.,
+            scale=self.initial_std,
+            size=(num_items, self.num_features)
+        )
+        for _ in range(self.num_iters):
+            self.user_mat = self.update(train_mat, self.item_mat)
+            self.item_mat = self.update(train_mat.T, self.user_mat)
 
-    def update(self, R_mat, Mfixed):
+    def update(self, data_mat, latent_mat):
         """ALS update step"""
-        Amat = Mfixed.T.dot(Mfixed)
-        Amat += np.eye(self.num_features) * self.reg_lambda
-        return R_mat.dot(Mfixed).dot(np.linalg.inv(Amat))
+        inv_mat = np.linalg.inv(latent_mat.T.dot(latent_mat) + self.reg_mat)
+        return data_mat.dot(latent_mat).dot(inv_mat)
+
+
+class MF_WALS:
+    """
+    Weighted Alternating Least Square solution to Matrix Factorization
+    """
+
+    def __init__(
+        self,
+        num_features: int,
+        reg_lambda: float,
+        num_iters: int,
+        initial_std: float,
+        ncores: int = 8,
+        weighting_strategy: str = 'uniform',
+        seed: int | None = None,
+    ):
+        self.reg_lambda = reg_lambda
+        self.num_features = num_features
+        self.num_iters = num_iters
+        self.weighting_strategy = weighting_strategy
+        self.seed = seed
+        self.ncores = ncores
+        self.initial_std = initial_std
+        self.user_mat = None
+        self.item_mat = None
+        self.weight_mat = None
+        self.reg_mat = np.eye(self.num_features) * self.reg_lambda
+
+    def fit(self, train_mat):
+        """
+        Fit function
+        """
+        # record the training and testing mse for every iteration
+        # to show convergence later (usually, not worth it for production)
+        rstate = np.random.RandomState(seed=self.seed)
+        num_users, num_items = train_mat.shape
+        self.item_mat = rstate.normal(
+            loc=0.,
+            scale=self.initial_std,
+            size=(num_items, self.num_features)
+        )
+        self.user_mat = np.zeros((num_users, self.num_features))
+        self.weight_mat = get_interaction_weights(
+            train_mat=train_mat,
+            strategy=self.weighting_strategy
+        )
+        # user_tuple = [(train_mat[i, :], self.weight_mat[i, :])
+        #               for i in range(num_users)]
+        # item_tuple = [(train_mat[:, i].T, self.weight_mat[:, i])
+        #               for i in range(num_items)]
+
+        for j in range(self.num_iters):
+            #print(j, end="-", flush=True)
+            # try 1
+            # for i, (train_vec, weight_vec) in enumerate(user_tuple):
+            #     self.user_mat[i, :] = self.update(
+            #         train_vec,
+            #         self.item_mat,
+            #         weight_vec
+            #     )
+            # for i, (train_vec, weight_vec) in enumerate(item_tuple):
+            #     self.item_mat[i, :] = self.update(
+            #         train_vec,
+            #         self.user_mat,
+            #         weight_vec
+            #     )
+            # try 2
+            for i in range(num_users):
+                self.user_mat[i, :] = self.update(
+                    train_mat[i, :],
+                    self.item_mat,
+                    self.weight_mat[i, :]
+                )
+            for i in range(num_items):
+                self.item_mat[i, :] = self.update(
+                    train_mat[:, i].T,
+                    self.user_mat,
+                    self.weight_mat[:, i]
+                )
+
+            # Parrallel is taking more time than serial!!
+            # with mp.Pool(processes=self.ncores) as p:
+            #     results = p.map(lambda ituple: self.update(
+            #         ituple[0],
+            #         self.item_mat,
+            #         ituple[1]
+            #     ), user_tuple)
+            #     #print(list(results), flush=True)
+            #     for i, ix in enumerate(results):
+            #         self.user_mat[i, :] = ix
+            #     #self.user_mat = np.squeeze(np.asarray(list(results)), axis=1)
+
+            # with mp.Pool(processes=self.ncores) as p:
+            #     results = p.map(lambda ituple: self.update(
+            #         ituple[0],
+            #         self.user_mat,
+            #         ituple[1]
+            #     ), item_tuple)
+            #     for i, ix in enumerate(results):
+            #         self.item_mat[i, :] = ix
+                #self.item_mat = np.squeeze(np.asarray(list(results)), axis=1)
+            #print(np.squeeze(np.asarray(results), axis=1).shape)
+
+    def update(self, data_vec, latent_mat, wgts):
+        """WALS update step"""
+        Wtilde = np.diag(wgts)
+        inv_mat = latent_mat.T.dot(Wtilde).dot(latent_mat) + self.reg_mat
+        inv_mat = np.linalg.inv(inv_mat)
+        return data_vec.dot(Wtilde).dot(latent_mat).dot(inv_mat)
