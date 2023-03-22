@@ -20,16 +20,17 @@ def compute_mse(y_true, y_pred):
 def load_movielens_data(flag='ml-100k'):
     """Function to read movielens data"""
     names = ['user_id', 'item_id', 'rating', 'timestamp']
+    data_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))), 'data')
     if flag == 'ml-100k':
-        file_path = os.path.join(os.path.curdir, 'data', flag, 'u.data')
+        file_path = os.path.join(data_path, flag, 'u.data')
         df = pd.read_csv(file_path, sep='\t', names=names)
         return df
     elif flag == 'ml-1m':
-        file_path = os.path.join(os.path.curdir, 'data', flag, 'ratings.dat')
+        file_path = os.path.join(data_path, flag, 'ratings.dat')
         df = pd.read_csv(file_path, sep='::', names=names, engine='python')
         return df
     elif flag == 'ml-10M100K':
-        file_path = os.path.join(os.path.curdir, 'data', flag, 'ratings.dat')
+        file_path = os.path.join(data_path, flag, 'ratings.dat')
         df = pd.read_csv(file_path, sep='::', names=names, engine='python')
         return df
     else:
