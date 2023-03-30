@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from count_model.count_data import CountData
 
@@ -8,7 +8,6 @@ from count_model.count_data import CountData
 class LinkCountData:
     count: int
     total: int
-    source_total : int = 0
 
     def __add__(self, other: "LinkCountData") -> "LinkCountData":
         return LinkCountData(self.count + other.count, self.total + other.total)
