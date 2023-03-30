@@ -6,5 +6,5 @@ from count_model.count_data import CountData
 
 @dataclass(slots=True)
 class SourceData:
-    count: int = 0
+    total: int = 0
     destination_counts: Dict[Any, int] = field(default_factory=lambda : {})

@@ -5,7 +5,7 @@ from count_model.link_counter import LinkCounter
 from count_model.source_data import SourceData
 
 
-class UniformPriorProbabilityModel(CountModel):
+class UniformPriorModel(CountModel):
     link_prior: float
     source_prior: float
 

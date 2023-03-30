@@ -40,7 +40,7 @@ class CountModel(ABC):
     ) -> Iterator[Tuple[Any, float]]:
         source_data = self._link_counter.get_source_data(source)
         destination_counts = source_data.destination_counts
-        source_count = source_data.count
+        source_count = source_data.total
         return (
             (
                 destination,

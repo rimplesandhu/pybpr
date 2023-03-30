@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from collections import deque
+from dataclasses import dataclass
 from typing import Any, Iterator, Tuple
 from count_model.count_model import CountModel
 from count_model.link_counter import LinkCounter
@@ -7,24 +8,16 @@ from count_model.source_data import SourceData
 from count_model.sequence_counter import SequenceCounter
 
 
+@dataclass(slots=True)
 class WindowCounter(SequenceCounter):
-    _link_counter: LinkCounter
-    _window_size: int
-
-    def __init__(
-        self,
-        link_counter: LinkCounter,
-        window_size: int,
-    ) -> None:
-        super().__init__()
-        self._link_counter = link_counter
-        self._window_size = window_size
+    link_counter: LinkCounter
+    window_size: int
 
     def observe_sequence(
         self,
         sequence: Iterator,
     ) -> None:
-        link_counter = self._link_counter
+        link_counter = self.link_counter
         history = deque()
 
         for element, num in sequence:
@@ -34,5 +27,19 @@ class WindowCounter(SequenceCounter):
 
             # slide window over one element
             history.append(element)
-            if len(history) > self._window_size:
+            if len(history) > self.window_size:
                 history.popleft()
+
+    def get_sequence_weights(
+            self,
+            sequence: Iterator,
+    ) -> Any:
+        link_counter = self.link_counter
+        dests = {}
+        denomenator = 0
+        for source, num in sequence:
+            source_data = link_counter.get_source_data(source)
+            denomenator += source_data.total
+            for dest, num in source_data.destination_counts:
+                dests[dest] = dests.get(dest, 0) + num
+        return dests, denomenator
