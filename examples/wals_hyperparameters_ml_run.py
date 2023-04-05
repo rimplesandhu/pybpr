@@ -12,17 +12,14 @@ import pathos.multiprocessing as mp
 #import multiprocessing as mp
 
 
-NCORES = 16
-
-
 def get_ndcg_wals(irow, dfshort):
-    idx, idict = irow
-    print(idx, end="-", flush=True)
+    _, idict = irow
+    #print(idx, end="-", flush=True)
     cf = UserItemInteractions(
         name='MovieLens-100k',
         users=dfshort['user_id'],
         items=dfshort['item_id'],
-        min_num_rating_per_user=20,
+        min_num_rating_per_user=10,
         min_num_rating_per_item=10
     )
     # cf.print_memory_usage()
@@ -32,19 +29,23 @@ def get_ndcg_wals(irow, dfshort):
         reg_lambda=idict['reg_lambda'],
         weighting_strategy=idict['wgt_strategy'],
         num_iters=idict['num_iters'],
-        initial_std=0.1,
+        initial_std=idict['initial_std'],
         seed=None
     )
-    wals.fit(cf.R_train)
-    wals_ndcg_func = partial(
-        cf.get_ndcg_metric,
-        user_mat=wals.user_mat,
-        item_mat=wals.item_mat,
-        num_items=idict['ndcg_num_items']
-    )
     out_dict = {}
-    out_dict['ndcg_test'] = wals_ndcg_func(test=True)
-    out_dict['ndcg_train'] = wals_ndcg_func(test=False)
+    try:
+        wals.fit(cf.R_train)
+        wals_ndcg_func = partial(
+            cf.get_ndcg_metric,
+            user_mat=wals.user_mat,
+            item_mat=wals.item_mat,
+            num_items=idict['ndcg_num_items']
+        )
+        out_dict['ndcg_test'] = wals_ndcg_func(test=True)
+        out_dict['ndcg_train'] = wals_ndcg_func(test=False)
+    except:
+        out_dict['ndcg_test'] = np.nan
+        out_dict['ndcg_train'] = np.nan
     return out_dict
 
 
@@ -52,28 +53,19 @@ if __name__ == "__main__":
 
     df = load_movielens_data('ml-100k')
     dfshort = df[df['rating'] > 0]
-
-    # create combination of hyperparameters to vary
-    list_of_num_features = np.arange(1, 100, 4)
-    list_of_wgt_strategies = ['same', 'uniform',
-                              'user-oriented', 'item-oriented']
-    list_of_ndcg_num_items = [5, 10, 20]
-    list_of_num_iters = [5, 10, 20]
-    list_of_reg_lambda = [0.]
-    list_of_test_ratio = [0.1, 0.2]
-
-    iter_list = list(itertools.product(
-        list_of_num_features,
-        list_of_wgt_strategies,
-        list_of_ndcg_num_items,
-        list_of_num_iters,
-        list_of_reg_lambda,
-        list_of_test_ratio
-    ))
-    columns = ['num_features', 'wgt_strategy',
-               'ndcg_num_items', 'num_iters', 'reg_lambda',
-               'test_ratio']
-    df = pd.DataFrame(list(iter_list), columns=columns)
+    wgt_strategies = ['same', 'uniformly-negative',
+                      'user-oriented', 'item-oriented']
+    hyperparameter_choices = {
+        'num_features': np.arange(2, 60, 3),
+        'wgt_strategy': wgt_strategies,
+        'ndcg_num_items': [10],
+        'num_iters': [20, 30],
+        'reg_lambda': [0., 2., 5.],
+        'initial_std': [0.01],
+        'test_ratio': [0.2],
+    }
+    iter_list = list(itertools.product(*hyperparameter_choices.values()))
+    df = pd.DataFrame(iter_list, columns=hyperparameter_choices.keys())
     pfunc = partial(get_ndcg_wals, dfshort=dfshort)
     print(f'Got {df.shape[0]} hyperparameter combinations', flush=True)
 
@@ -85,15 +77,10 @@ if __name__ == "__main__":
 
     # parallel
     # start_time = time.time()
-    # with mp.ProcessPool(NCORES) as p:
+    # with mp.ProcessPool(8) as p:
     #     results = tqdm.tqdm(p.imap(pfunc, df.iterrows()), total=df.shape[0])
 
-    # concat
     df = pd.concat([df, pd.DataFrame(results)], axis=1)
     df.to_csv(os.path.join(os.path.curdir, 'output', 'ml100k_wals_results.csv'))
     run_time = np.around(((time.time() - start_time)) / 60., 2)
     print(f'---took {run_time} mins\n', flush=True)
-
-    # df['ndcg_test'] = np.nan
-    # df['ndcg_train'] = np.nan
-    # df['wall_time'] = np.nan

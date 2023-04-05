@@ -56,21 +56,27 @@ def compute_ndcg(
 
 def get_interaction_weights(
     train_mat,
-    strategy: str = 'same'
+    strategy: str = 'same',
+    fac: float | None = None
 ):
     """Function for getting the weights"""
     row_inds, col_inds, _ = ss.find(train_mat)
     num_users, num_items = train_mat.shape
     match strategy.lower():
-        case 'uniform':
+        case 'positive-only':
+            weight_mat = np.zeros(train_mat.shape)
+            weight_mat[row_inds, col_inds] = 1.
+        case 'uniformly-negative':
             weight_mat = np.random.uniform(size=train_mat.shape)
             weight_mat[row_inds, col_inds] = 1.
         case 'user-oriented':
-            weight_mat = train_mat.sum(axis=1) / num_items
+            fac = np.amax(train_mat.sum(axis=1)) if fac is None else fac
+            weight_mat = np.clip(train_mat.sum(axis=1), 0, fac) / fac
             weight_mat = np.array(np.repeat(weight_mat, num_items, axis=1))
             weight_mat[row_inds, col_inds] = 1.
         case 'item-oriented':
-            weight_mat = 1. - train_mat.sum(axis=0) / num_users
+            fac = np.amax(train_mat.sum(axis=0)) if fac is None else fac
+            weight_mat = 1 - np.clip(train_mat.sum(axis=0), 0, fac) / fac
             weight_mat = np.array(np.repeat(weight_mat, num_users, axis=0))
             weight_mat[row_inds, col_inds] = 1.
         case _:

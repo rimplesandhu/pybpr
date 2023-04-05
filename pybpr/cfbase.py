@@ -26,7 +26,7 @@ class UserItemInteractions:
         timestamps: List[int] | None = None,
         min_num_rating_per_user: int = 2,
         min_num_rating_per_item: int = 2,
-        name: str = 'Interactions',
+        name: str = 'Sample',
         num_cores: int = 8
     ):
         assert len(users) == len(items), 'User count not equal to item count'
@@ -40,7 +40,8 @@ class UserItemInteractions:
         self.df = pd.DataFrame({
             user_col: users,
             item_col: items
-        })
+        }, dtype='category')
+
         if timestamps is not None:
             self.df['Timestamp'] = timestamps
 
@@ -95,7 +96,8 @@ class UserItemInteractions:
     @property
     def sparsity(self):
         """Get the sparsity"""
-        return self.df.shape[0] * 100 / (self.num_users * self.num_items)
+        outs = self.df.shape[0] * 1 / (self.num_users * self.num_items)
+        return np.around(outs, 6)
 
     def print_memory_usage(self):
         """Prints memory usage"""
@@ -149,7 +151,8 @@ class UserItemInteractions:
         user_pred = user_mat[user_idx].dot(item_mat.T)
         top_inds = np.argsort(user_pred)[::-1]
         liked = set(self.R_train[user_idx].indices) if exclude_liked else set()
-        top_n = islice([ix for ix in top_inds if ix not in liked], num_items)
+        top_n = islice(
+            [ix for ix in top_inds if ix not in liked], int(num_items))
         # top_val = islice([user_pred[ix]
         #                  for ix in top_inds if ix not in liked], num_items)
         return list(top_n)
@@ -188,8 +191,7 @@ class UserItemInteractions:
         item_mat,
         num_items: int,
         test: bool = True,
-        truncate: bool = True,
-        ncores: int = 1
+        truncate: bool = True
     ):
         """Averaged NDCG across all users"""
         pfunc = partial(
@@ -201,7 +203,7 @@ class UserItemInteractions:
             truncate=truncate
         )
         ndcg_scores = []
-        if ncores <= 1:
+        if self.ncores <= 1:
             for idx in list(range(self.num_users)):
                 ndcg_scores.append(pfunc(idx))
         else:
@@ -234,18 +236,25 @@ class UserItemInteractions:
 
     def __str__(self) -> SyntaxWarning:
         """Print output"""
-        out_str = f'{self.__class__.__name__}: {self.name}:\n'
+        out_str = f'--{self.__class__.__name__}: {self.name}\n'
         out_str += f'  Number of users = {self.R.shape[0]}\n'
         out_str += f'  Number of items = {self.R.shape[1]}\n'
         out_str += f'  Number of interactions = {self.R.nnz}\n'
         return out_str
 
 
-cf_basic = UserItemInteractions(
+cf_8user_10item = UserItemInteractions(
     users=[1, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4,
            5, 5, 5, 5, 5, 6, 6, 6, 6, 7, 7, 7, 7, 8, 8, 8],
     items=[1, 2, 3, 4, 5, 1, 2, 3, 4, 2, 3, 4, 5, 2, 3, 4,
            6, 7, 8, 9, 10, 6, 7, 8, 9, 7, 8, 9, 10, 7, 8, 9]
+)
+
+cf_4user_5item = UserItemInteractions(
+    users=[1, 1, 1, 1, 2, 2, 2, 3, 3, 4],
+    items=[1, 2, 3, 5, 1, 2, 4, 2, 3, 3],
+    min_num_rating_per_user=0,
+    min_num_rating_per_item=0,
 )
 
 # def get_idx(entry):
