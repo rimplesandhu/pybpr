@@ -1,0 +1,24 @@
+def compute_dcg(seq):
+    return sum((
+        (score / (math.log(i + 1)))
+        for i, score in seq))
+
+def compute_ndcg(seq):
+    dcg = compute_dcg(sorted((predicted for predicted, actual in seq), reverse=True))
+    idcg = compute_dcg(sorted((actual for predicted, actual in seq), reverse=True))
+    return dcg / idcg
+
+def get_actuals(
+    df,
+    test_df,
+    scoring_function,
+    # sample_size = 0,
+):
+    user_groups = test_df.groupby('user_id')
+    for user_id, group in user_groups:
+        for positive, pg in group.groupby('positive'):
+        pos_scores = group[group['positive'] == 1]
+        
+
+
+    
