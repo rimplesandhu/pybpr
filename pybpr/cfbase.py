@@ -42,6 +42,11 @@ class UserItemInteractions:
             item_col: items
         }, dtype='category')
 
+        self.df = pd.DataFrame({
+            user_col: users,
+            item_col: items
+        })
+
         if timestamps is not None:
             self.df['Timestamp'] = timestamps
 
@@ -51,41 +56,43 @@ class UserItemInteractions:
         agg_flag = {num_ratings_col: (user_col, 'count')}
         self.df_item = self.df.groupby(item_col).agg(**agg_flag).reset_index()
 
-        # trim the interaction data based on min user item conditions
-        ubool = (self.df_user[num_ratings_col] >= min_num_rating_per_user)
-        selected_users = self.df_user.loc[ubool, user_col]
-        ibool = (self.df_item[num_ratings_col] >= min_num_rating_per_item)
-        selected_items = self.df_item.loc[ibool, item_col]
-        user_bool = (self.df[user_col].isin(selected_users))
-        item_bool = (self.df[item_col].isin(selected_items))
-        self.df = self.df[item_bool & user_bool].reset_index(drop=True)
-        user_bool = self.df_user[user_col].isin(self.df[user_col].unique())
-        self.df_user = self.df_user[user_bool]
-        item_bool = self.df_item[item_col].isin(self.df[item_col].unique())
-        self.df_item = self.df_item[item_bool]
+        # # trim the interaction data based on min user item conditions
+        # ubool = (self.df_user[num_ratings_col] >= min_num_rating_per_user)
+        # selected_users = self.df_user.loc[ubool, user_col]
+        # ibool = (self.df_item[num_ratings_col] >= min_num_rating_per_item)
+        # selected_items = self.df_item.loc[ibool, item_col]
+        # user_bool = (self.df[user_col].isin(selected_users))
+        # item_bool = (self.df[item_col].isin(selected_items))
+        # self.df = self.df[item_bool & user_bool].reset_index(drop=True)
+        # user_bool = self.df_user[user_col].isin(self.df[user_col].unique())
+        # self.df_user = self.df_user[user_bool]
+        # item_bool = self.df_item[item_col].isin(self.df[item_col].unique())
+        # self.df_item = self.df_item[item_bool]
 
-        # slice the user and item dataframes
-        iterator = zip([self.df_item, self.df_user], [item_col, user_col],
-                       [item_index_col, user_index_col])
-        for idf, id_colname, idx_colname in iterator:
-            # idf = idf[idf[id_colname].isin(
-            #     self.df[id_colname].unique())].copy()
-            idf.sort_values(by=num_ratings_col, ascending=False, inplace=True)
-            idf.reset_index(drop=True, inplace=True)
-            idf.reset_index(drop=False, inplace=True)
-            idf.set_index(id_colname, drop=True, inplace=True)
-            self.df[idx_colname] = idf.loc[self.df[id_colname]]['index'].values
-            idf.rename(columns={'index': idx_colname}, inplace=True)
-            idf.reset_index(drop=False, inplace=True)
-            idf.set_index(idx_colname, drop=True, inplace=True)
+        # # slice the user and item dataframes
+        # iterator = zip([self.df_item, self.df_user], [item_col, user_col],
+        #                [item_index_col, user_index_col])
+        # for idf, id_colname, idx_colname in iterator:
+        #     # idf = idf[idf[id_colname].isin(
+        #     #     self.df[id_colname].unique())].copy()
+        #     idf.sort_values(by=num_ratings_col, ascending=False, inplace=True)
+        #     idf.reset_index(drop=True, inplace=True)
+        #     idf.reset_index(drop=False, inplace=True)
+        #     idf.set_index(id_colname, drop=True, inplace=True)
+        #     self.df[idx_colname] = idf.loc[self.df[id_colname]]['index'].values
+        #     idf.rename(columns={'index': idx_colname}, inplace=True)
+        #     idf.reset_index(drop=False, inplace=True)
+        #     idf.set_index(idx_colname, drop=True, inplace=True)
         self.num_users = self.df[user_col].nunique()
         self.num_items = self.df[item_col].nunique()
+        print(f'Number of users: {self.num_users}')
+        print(f'Number of items: {self.num_items}')
         # self.df_user[user_col] = self.df_user[user_col].astype('category')
         # self.df_item[item_col] = self.df_item[item_col].astype('category')
 
         self.R = csr_matrix(
             (np.ones((self.df.shape[0],)),
-             (self.df['UserIndex'], self.df['ItemIndex'])),
+             (self.df['UserID'], self.df['ItemID'])),
             dtype=np.int8
         )
         self.R_test = csr_matrix(self.R.shape, dtype=np.int8)
@@ -121,8 +128,8 @@ class UserItemInteractions:
         rstate = np.random.RandomState(seed=seed)
         self.df['Training'] = True
         index_names = ['ItemIndex', 'UserIndex']
-        if list(self.df.index.names) != index_names:
-            self.df.set_index(index_names, inplace=True)
+        # if list(self.df.index.names) != index_names:
+        #     self.df.set_index(index_names, inplace=True)
         self.R_test = dok_matrix(self.R.shape, dtype=np.int8)
         self.R_train = self.R.copy().todok()
         for ith_user in range(self.R.shape[0]):
@@ -135,7 +142,7 @@ class UserItemInteractions:
             )
             self.R_test[ith_user, ith_items] = 1
             self.R_train[ith_user, ith_items] = 0
-            self.df.loc[(ith_items, ith_user), 'Training'] = False
+            #self.df.loc[(ith_items, ith_user), 'Training'] = False
         self.R_test = self.R_test.tocsr()
         self.R_train = self.R_train.tocsr()
 

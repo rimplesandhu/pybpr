@@ -43,13 +43,16 @@ class BPR:
         # to avoid re-computation at predict
         # self._prediction = None
 
-    def fit(self, train_mat, ndcg_func=None):
+    def fit(self, train_mat, train_mat_neg=None, ndcg_func=None):
         """
         Fit function
         """
         num_users, num_items = train_mat.shape
         indptr = train_mat.indptr
         indices = train_mat.indices
+        if train_mat_neg is not None:
+            indptrn = train_mat_neg.indptr
+            indicesn = train_mat_neg.indices
         if num_users < self.batch_size:
             batch_size = num_users
             print('WARNING: Batch size is greater than number of users')
@@ -76,23 +79,28 @@ class BPR:
         loop = range(self.num_iters)
         if self.verbose:
             loop = trange(self.num_iters, desc=self.__class__.__name__)
-        for _ in loop:
-            for _ in range(batch_iters):
+        for i in loop:
+            for j in range(batch_iters):
                 sampled_pos_items = np.zeros(batch_size, dtype=np.int)
                 sampled_neg_items = np.zeros(batch_size, dtype=np.int)
                 sampled_users = np.random.choice(
                     a=num_users,
                     size=batch_size,
-                    replace=False
+                    replace=False  # a user cannot be repeated in each batch
                 )
                 for idx, user in enumerate(sampled_users):
                     pos_items = indices[indptr[user]:indptr[user + 1]]
                     pos_item = np.random.choice(pos_items)
-                    neg_item = np.random.choice(num_items)
-                    while neg_item in pos_items:
+                    if train_mat_neg is not None:
+                        neg_items = indicesn[indptrn[user]:indptrn[user + 1]]
+                        neg_item = np.random.choice(neg_items)
+                    else:
                         neg_item = np.random.choice(num_items)
+                        while neg_item in pos_items:
+                            neg_item = np.random.choice(num_items)
                     sampled_pos_items[idx] = pos_item
                     sampled_neg_items[idx] = neg_item
+                    print(f'{i}-{j}: {user}, {pos_item}, {neg_item}')
                 self.update(
                     sampled_users,
                     sampled_pos_items,
