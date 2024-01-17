@@ -1,9 +1,6 @@
 """Base class for defining Collaboative filtering"""
 from typing import List
 from itertools import islice
-from functools import partial
-import pathos.multiprocessing as mp
-import pandas as pd
 import numpy as np
 from scipy.sparse import csr_matrix, dok_matrix
 from sklearn.preprocessing import normalize
@@ -21,130 +18,102 @@ class UserItemInteractions:
 
     def __init__(
         self,
-        users: List[int],
-        items: List[int],
-        timestamps: List[int] | None = None,
-        min_num_rating_per_user: int = 2,
-        min_num_rating_per_item: int = 2,
+        items_index: List[int],
+        users_index: List[int],
+        num_items: int = None,
+        num_users: int = None,
         name: str = 'Sample',
-        num_cores: int = 8
     ):
-        assert len(users) == len(items), 'User count not equal to item count'
+        # Initiate
+        items_index = np.asarray(items_index, dtype=np.int64)
+        users_index = np.asarray(users_index, dtype=np.int64)
         self.name = name
-        self.ncores = num_cores
-        user_col = 'UserID'
-        item_col = 'ItemID'
-        user_index_col = 'UserIndex'
-        item_index_col = 'ItemIndex'
-        num_ratings_col = 'NumRatings'
-        self.df = pd.DataFrame({
-            user_col: users,
-            item_col: items
-        }, dtype='category')
 
-        self.df = pd.DataFrame({
-            user_col: users,
-            item_col: items
-        })
+        # check compatibility of user inputs
+        if items_index.size != users_index.size:
+            raise ValueError('Length mismatch b/w items_index and users_index')
 
-        if timestamps is not None:
-            self.df['Timestamp'] = timestamps
+        # deal with num_items
+        if num_items is not None:
+            if max(items_index) >= num_items:
+                raise ValueError('num_items incompatible with items_index!')
+        else:
+            num_items = np.amax(items_index) + 1
 
-        # create user and item dframes
-        agg_flag = {num_ratings_col: (item_col, 'count')}
-        self.df_user = self.df.groupby(user_col).agg(**agg_flag).reset_index()
-        agg_flag = {num_ratings_col: (user_col, 'count')}
-        self.df_item = self.df.groupby(item_col).agg(**agg_flag).reset_index()
+        # deal with num_users
+        if num_users is not None:
+            if max(users_index) >= num_users:
+                raise ValueError('num_items incompatible with items_index!')
+        else:
+            num_users = np.amax(users_index) + 1
 
-        # # trim the interaction data based on min user item conditions
-        # ubool = (self.df_user[num_ratings_col] >= min_num_rating_per_user)
-        # selected_users = self.df_user.loc[ubool, user_col]
-        # ibool = (self.df_item[num_ratings_col] >= min_num_rating_per_item)
-        # selected_items = self.df_item.loc[ibool, item_col]
-        # user_bool = (self.df[user_col].isin(selected_users))
-        # item_bool = (self.df[item_col].isin(selected_items))
-        # self.df = self.df[item_bool & user_bool].reset_index(drop=True)
-        # user_bool = self.df_user[user_col].isin(self.df[user_col].unique())
-        # self.df_user = self.df_user[user_bool]
-        # item_bool = self.df_item[item_col].isin(self.df[item_col].unique())
-        # self.df_item = self.df_item[item_bool]
-
-        # # slice the user and item dataframes
-        # iterator = zip([self.df_item, self.df_user], [item_col, user_col],
-        #                [item_index_col, user_index_col])
-        # for idf, id_colname, idx_colname in iterator:
-        #     # idf = idf[idf[id_colname].isin(
-        #     #     self.df[id_colname].unique())].copy()
-        #     idf.sort_values(by=num_ratings_col, ascending=False, inplace=True)
-        #     idf.reset_index(drop=True, inplace=True)
-        #     idf.reset_index(drop=False, inplace=True)
-        #     idf.set_index(id_colname, drop=True, inplace=True)
-        #     self.df[idx_colname] = idf.loc[self.df[id_colname]]['index'].values
-        #     idf.rename(columns={'index': idx_colname}, inplace=True)
-        #     idf.reset_index(drop=False, inplace=True)
-        #     idf.set_index(idx_colname, drop=True, inplace=True)
-        self.num_users = self.df[user_col].nunique()
-        self.num_items = self.df[item_col].nunique()
-        print(f'Number of users: {self.num_users}')
-        print(f'Number of items: {self.num_items}')
-        # self.df_user[user_col] = self.df_user[user_col].astype('category')
-        # self.df_item[item_col] = self.df_item[item_col].astype('category')
-
-        self.R = csr_matrix(
-            (np.ones((self.df.shape[0],)),
-             (self.df['UserID'], self.df['ItemID'])),
+        # create an interaction matrix sparsely filled with ones
+        self.mat = csr_matrix(
+            (np.ones((len(items_index),)), (users_index, items_index)),
+            shape=(num_users, num_items),
             dtype=np.int8
         )
-        self.R_test = csr_matrix(self.R.shape, dtype=np.int8)
-        self.R_train = csr_matrix(self.R.shape, dtype=np.int8)
-        # for col in [user_col, item_col, user_index_col, item_index_col]:
-        #     self.df[col] = self.df[col].astype('category')
 
-    @property
-    def sparsity(self):
-        """Get the sparsity"""
-        outs = self.df.shape[0] * 1 / (self.num_users * self.num_items)
-        return np.around(outs, 6)
-
-    def print_memory_usage(self):
-        """Prints memory usage"""
-        print(f'--- Memory usage for {self.name}:', flush=True)
-        R_mb = np.around(self.R.data.nbytes / 1024 / 1024, 2)
-        print(f'Sparse User-Item matrix = {R_mb} MB', flush=True)
-        df_mb = np.around(self.df.memory_usage().sum() / 1024 / 1024, 2)
-        print(f'User-Item dataframe df = {df_mb} MB', flush=True)
-        df_mb = np.around(self.df_item.memory_usage().sum() / 1024 / 1024, 2)
-        print(f'Item dataframe df_item = {df_mb} MB', flush=True)
-        df_mb = np.around(self.df_user.memory_usage().sum() / 1024 / 1024, 2)
-        print(f'Item dataframe df_user = {df_mb} MB', flush=True)
-        print('---')
+        # create training and test versions of sparse int matrix
+        self.mat_test = csr_matrix(self.mat.shape, dtype=np.int8)
+        self.mat_train = self.mat.copy()
+        print(self.__str__())
 
     def generate_train_test(
         self,
         user_test_ratio: float = 0.2,
         seed: int = 1234
     ):
-        """Split the R matrix into train and test"""
-        rstate = np.random.RandomState(seed=seed)
-        self.df['Training'] = True
-        index_names = ['ItemIndex', 'UserIndex']
-        # if list(self.df.index.names) != index_names:
-        #     self.df.set_index(index_names, inplace=True)
-        self.R_test = dok_matrix(self.R.shape, dtype=np.int8)
-        self.R_train = self.R.copy().todok()
-        for ith_user in range(self.R.shape[0]):
-            items_ith_user = self.R[ith_user].indices
-            test_size = int(np.ceil(user_test_ratio * items_ith_user.size))
-            ith_items = rstate.choice(
-                items_ith_user,
-                size=test_size,
-                replace=False
-            )
-            self.R_test[ith_user, ith_items] = 1
-            self.R_train[ith_user, ith_items] = 0
-            #self.df.loc[(ith_items, ith_user), 'Training'] = False
-        self.R_test = self.R_test.tocsr()
-        self.R_train = self.R_train.tocsr()
+        """Split the UI matrix into train and test"""
+        print('Generating train-test split..', end="")
+        assert user_test_ratio <= 0.5, 'user_test_ratio should be in [0,0.5]'
+        assert user_test_ratio >= 0.0, 'user_test_ratio should be in [0,0.5]'
+
+        if user_test_ratio < 1e-3:
+            print('Warning: Test matrix is set as empty/all-zeros')
+            self.mat_test = csr_matrix(self.mat.shape, dtype=np.int8)
+            self.mat_train = self.mat.copy()
+        else:
+            # min number of item interactions required per user
+            min_interactions = int(1/user_test_ratio) + 1
+
+            # find those users that haave atleast min_interactions
+            num_interactions = np.asarray(self.mat.sum(axis=1)).reshape(-1)
+            valid_users = np.where(num_interactions > min_interactions)[0]
+
+            # initiate test and train matrices
+            np.random.seed(seed=seed)
+            self.mat_test = dok_matrix(self.mat.shape, dtype=np.int8)
+            self.mat_train = self.mat.copy().todok()
+
+            # iterate over each user and split its interactions into test/train
+            for ith_user in valid_users:
+                items_ith_user = self.mat[ith_user].indices
+                test_size = int(np.ceil(user_test_ratio * items_ith_user.size))
+                ith_items = np.random.choice(
+                    items_ith_user,
+                    size=test_size,
+                    replace=False
+                )
+                self.mat_test[ith_user, ith_items] = 1
+                self.mat_train[ith_user, ith_items] = 0
+            self.mat_test = self.mat_test.tocsr()
+            self.mat_train = self.mat_train.tocsr()
+
+        # check if train+test=original UI mat
+        print('done', flush=True)
+        if (self.mat_train + self.mat_test != self.mat).nnz != 0:
+            raise RuntimeError('Issue with test/train split')
+
+    def users_sorted_by_activity(self, count: int | None = None):
+        """return the most -count- active users"""
+        # get number of interactions for each user
+        count_vector = np.asarray(self.mat.sum(axis=1)).reshape(-1)
+        # get the index of users with most interactions at 0
+        sorted_user_list = count_vector.argsort()[::-1]
+        if count is not None:
+            sorted_user_list = sorted_user_list[:count]
+        return sorted_user_list
 
     def get_top_items_for_this_user(
         self,
@@ -157,7 +126,8 @@ class UserItemInteractions:
         """Returns top products for this user"""
         user_pred = user_mat[user_idx].dot(item_mat.T)
         top_inds = np.argsort(user_pred)[::-1]
-        liked = set(self.R_train[user_idx].indices) if exclude_liked else set()
+        liked = set(
+            self.mat_train[user_idx].indices) if exclude_liked else set()
         top_n = islice(
             [ix for ix in top_inds if ix not in liked], int(num_items))
         # top_val = islice([user_pred[ix]
@@ -174,7 +144,7 @@ class UserItemInteractions:
         truncate: bool = True
     ):
         """Computes NDCG score for this user"""
-        data_mat = self.R_test if test else self.R_train
+        data_mat = self.mat_test if test else self.mat_train
         test_inds = list(data_mat[user_idx].indices)
         num_items = min(len(test_inds), num_items) if truncate else num_items
         exclude_liked = True if test else False
@@ -192,31 +162,37 @@ class UserItemInteractions:
         )
         return ndcg_score
 
-    def get_ndcg_metric(
-        self,
-        user_mat,
-        item_mat,
-        num_items: int,
-        test: bool = True,
-        truncate: bool = True
-    ):
-        """Averaged NDCG across all users"""
-        pfunc = partial(
-            self.get_ndcg_metric_user,
-            user_mat=user_mat,
-            item_mat=item_mat,
-            num_items=num_items,
-            test=test,
-            truncate=truncate
-        )
-        ndcg_scores = []
-        if self.ncores <= 1:
-            for idx in list(range(self.num_users)):
-                ndcg_scores.append(pfunc(idx))
-        else:
-            with mp.Pool(processes=self.ncores) as p:
-                ndcg_scores = p.map(pfunc, list(range(self.num_users)))
-        return np.mean(ndcg_scores)
+    # def get_ndcg_metric(
+    #     self,
+    #     user_mat,
+    #     item_mat,
+    #     num_items: int,
+    #     num_users: int = 100,
+    #     test: bool = True,
+    #     truncate: bool = False,
+    #     ncores:int=1
+    # ):
+    #     """Averaged NDCG across all users"""
+    #     pfunc = partial(
+    #         self.get_ndcg_metric_user,
+    #         user_mat=user_mat,
+    #         item_mat=item_mat,
+    #         num_items=num_items,
+    #         test=test,
+    #         truncate=truncate
+    #     )
+    #     ndcg_scores = []
+    #     chosen_users = np.random.choice(
+    #         self.num_users,
+    #         size=num_users
+    #     )
+    #     if self.ncores <= 1:
+    #         for idx in chosen_users:
+    #             ndcg_scores.append(pfunc(idx))
+    #     else:
+    #         with mp.Pool(processes=self.ncores) as p:
+    #             ndcg_scores = p.map(pfunc, chosen_users)
+    #     return np.mean(ndcg_scores)
 
     def get_similar(
         self,
@@ -243,44 +219,84 @@ class UserItemInteractions:
 
     def __str__(self) -> SyntaxWarning:
         """Print output"""
-        out_str = f'--{self.__class__.__name__}: {self.name}\n'
-        out_str += f'  Number of users = {self.R.shape[0]}\n'
-        out_str += f'  Number of items = {self.R.shape[1]}\n'
-        out_str += f'  Number of interactions = {self.R.nnz}\n'
+        out_str = f'----{self.__class__.__name__}--{self.name}\n'
+        out_str += f'# of users (active/total): {self.num_users_active}/{
+            self.num_users}\n'
+        out_str += f'# of items (active/total): {self.num_items_active}/{
+            self.num_items}\n'
+        out_str += f'# of interactions: {self.mat.nnz}\n'
+        out_str += f'Sparsity in the UI mat: {self.sparsity}\n'
+        R_mb = np.around(self.mat.data.nbytes / 1024 / 1024, 2)
+        out_str += f'Memory used by sparse UI mat: {R_mb} MB\n'
         return out_str
 
+    @property
+    def num_users(self):
+        """Number of users"""
+        return self.mat.shape[0]
 
-cf_8user_10item = UserItemInteractions(
-    users=[1, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4,
-           5, 5, 5, 5, 5, 6, 6, 6, 6, 7, 7, 7, 7, 8, 8, 8],
-    items=[1, 2, 3, 4, 5, 1, 2, 3, 4, 2, 3, 4, 5, 2, 3, 4,
-           6, 7, 8, 9, 10, 6, 7, 8, 9, 7, 8, 9, 10, 7, 8, 9]
-)
+    @property
+    def num_items(self):
+        """Number of users"""
+        return self.mat.shape[1]
 
-cf_4user_5item = UserItemInteractions(
-    users=[1, 1, 1, 1, 2, 2, 2, 3, 3, 4],
-    items=[1, 2, 3, 5, 1, 2, 4, 2, 3, 3],
-    min_num_rating_per_user=0,
-    min_num_rating_per_item=0,
-)
+    @property
+    def active_users(self):
+        """Index of users with atleast one interaction"""
+        return np.where(np.asarray(self.mat.sum(axis=1)).reshape(-1) > 0)[0]
 
-# def get_idx(entry):
-#     print(entry[item_col])
-#     item_idx = pd.Index(
-#         self.df_item[item_col]).get_loc(entry[item_col].values)
-#     user_idx = pd.Index(
-#         self.df_user[user_col]).get_loc(entry[user_col].values)
-#     return item_idx, user_idx
-# indices_tuple = self.df.swifter.apply(get_idx, axis=1)
-# item_inds, user_inds = zip(*indices_tuple)
-# user_bool = self.df_user[user_col].isin(self.df[user_col].unique())
-# self.df_user = self.df_user[user_bool]
-# self.df_user.sort_values(by=num_ratings_col, ascending=False,
-#                          inplace=True)
-# self.df_user.reset_index(drop=True, inplace=True)
-# item_bool = self.df_item[item_col].isin(self.df[item_col].unique())
-# self.df_item = self.df_item[item_bool]
-# self.df_item.sort_values(by=num_ratings_col, ascending=False,
+    @property
+    def active_items(self):
+        """Index of items with atleast one interaction"""
+        return np.where(np.asarray(self.mat.sum(axis=0)).reshape(-1) > 0)[0]
+
+    @property
+    def num_users_active(self):
+        """Number of users"""
+        return self.active_users.size
+
+    @property
+    def num_items_active(self):
+        """Number of users"""
+        return self.active_items.size
+
+    @property
+    def sparsity(self):
+        """Get the sparsity"""
+        outs = self.mat.nnz * 1 / (self.num_users * self.num_items)
+        return np.around(outs, 6)
+
+# cf_8user_10item = UserItemInteractions(
+#     users=[1, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4,
+#            5, 5, 5, 5, 5, 6, 6, 6, 6, 7, 7, 7, 7, 8, 8, 8],
+#     items=[1, 2, 3, 4, 5, 1, 2, 3, 4, 2, 3, 4, 5, 2, 3, 4,
+#            6, 7, 8, 9, 10, 6, 7, 8, 9, 7, 8, 9, 10, 7, 8, 9]
+# )
+
+# cf_4user_5item = UserItemInteractions(
+#     users=[1, 1, 1, 1, 2, 2, 2, 3, 3, 4],
+#     items=[1, 2, 3, 5, 1, 2, 4, 2, 3, 3],
+#     min_num_rating_per_user=0,
+#     min_num_rating_per_item=0,
+# )
+
+# # def get_idx(entry):
+# #     print(entry[self.item_col])
+# #     item_idx = pd.Index(
+# #         self.df_item[self.item_col]).get_loc(entry[self.item_col].values)
+# #     user_idx = pd.Index(
+# #         self.df_user[user_col]).get_loc(entry[user_col].values)
+# #     return item_idx, user_idx
+# # indices_tuple = self.df.swifter.apply(get_idx, axis=1)
+# # item_inds, user_inds = zip(*indices_tuple)
+# # user_bool = self.df_user[user_col].isin(self.df[user_col].unique())
+# # self.df_user = self.df_user[user_bool]
+# # self.df_user.sort_values(by=num_ratings_col, ascending=False,
+# #                          inplace=True)
+# # self.df_user.reset_index(drop=True, inplace=True)
+# # item_bool = self.df_item[self.item_col].isin(self.df[self.item_col].unique())
+# # self.df_item = self.df_item[item_bool]
+# # self.df_item.sort_values(by=num_ratings_col, ascending=False,
 #                          inplace=True)
 # self.df_item.reset_index(drop=True, inplace=True)
 
@@ -293,15 +309,15 @@ cf_4user_5item = UserItemInteractions(
 # self.df_user.drop(columns=('index'))
 
 # self.df_item.reset_index(drop=False, inplace=True)
-# self.df_item.set_index(item_col, drop=True, inplace=True)
-# self.df['ItemIdx'] = self.df_item.loc[self.df[item_col]]['index'].values
+# self.df_item.set_index(self.item_col, drop=True, inplace=True)
+# self.df['ItemIdx'] = self.df_item.loc[self.df[self.item_col]]['index'].values
 # self.df_item.drop(columns=('index'))
 # u_inds = self.df_user[user_col].cat.codes.values
-# i_inds = self.df_item[item_col].cat.codes.values
-# self.df_user['NumRatings_Train'] = self.R_train.sum(axis=1)[u_inds, 0]
-# self.df_user['NumRatings_Test'] = self.R_test.sum(axis=1)[u_inds, 0]
-# self.df_item['NumRatings_Train'] = self.R_train.sum(axis=0)[0, i_inds]
-# self.df_item['NumRatings_Test'] = self.R_test.sum(axis=0)[0, i_inds]
+# i_inds = self.df_item[self.item_col].cat.codes.values
+# self.df_user['NumRatings_Train'] = self.mat_train.sum(axis=1)[u_inds, 0]
+# self.df_user['NumRatings_Test'] = self.mat_test.sum(axis=1)[u_inds, 0]
+# self.df_item['NumRatings_Train'] = self.mat_train.sum(axis=0)[0, i_inds]
+# self.df_item['NumRatings_Test'] = self.mat_test.sum(axis=0)[0, i_inds]
 
 # def get_top_items_for_this_user(
 #     self,
@@ -312,3 +328,49 @@ cf_4user_5item = UserItemInteractions(
 #     """Returns top products for this user"""
 #     user_pred =
 #     items_for_this_user = R_est[user, :]
+  # # trim the interaction data based on min user item conditions
+        # ubool = (self.df_user[num_ratings_col] >= min_num_rating_per_user)
+        # selected_users = self.df_user.loc[ubool, user_col]
+        # ibool = (self.df_item[num_ratings_col] >= min_num_rating_per_item)
+        # selected_items = self.df_item.loc[ibool, self.item_col]
+        # user_bool = (self.df[user_col].isin(selected_users))
+        # item_bool = (self.df[self.item_col].isin(selected_items))
+        # self.df = self.df[item_bool & user_bool].reset_index(drop=True)
+        # user_bool = self.df_user[user_col].isin(self.df[user_col].unique())
+        # self.df_user = self.df_user[user_bool]
+        # item_bool = self.df_item[self.item_col].isin(self.df[self.item_col].unique())
+        # self.df_item = self.df_item[item_bool]
+
+        # # slice the user and item dataframes
+        # iterator = zip([self.df_item, self.df_user], [self.item_col, user_col],
+        #                [self.item_col, user_col])
+        # for idf, id_colname, idx_colname in iterator:
+        #     # idf = idf[idf[id_colname].isin(
+        #     #     self.df[id_colname].unique())].copy()
+        #     idf.sort_values(by=num_ratings_col, ascending=False, inplace=True)
+        #     idf.reset_index(drop=True, inplace=True)
+        #     idf.reset_index(drop=False, inplace=True)
+        #     idf.set_index(id_colname, drop=True, inplace=True)
+        #     self.df[idx_colname] = idf.loc[self.df[id_colname]]['index'].values
+        #     idf.rename(columns={'index': idx_colname}, inplace=True)
+        #     idf.reset_index(drop=False, inplace=True)
+        #     idf.set_index(idx_colname, drop=True, inplace=True)
+
+        #     self.user_col = 'user_idx'
+        # self.item_col = 'item_idx'
+        # num_ratings_col = 'num_interactions'
+        # self.df = pd.DataFrame({
+        #     self.user_col: users_index,
+        #     self.item_col: items_index
+        # }, dtype=int)
+
+        # if timestamps is not None:
+        #     self.df['Timestamp'] = timestamps
+
+        # # create user and item dframes
+        # agg_flag = {num_ratings_col: (self.item_col, 'count')}
+        # self.df_user = self.df.groupby(self.user_col).agg(**agg_flag)
+        # self.df_user.sort_values(by=num_ratings_col, inplace=True)
+        # agg_flag = {num_ratings_col: (self.user_col, 'count')}
+        # self.df_item = self.df.groupby(self.item_col).agg(**agg_flag)
+        # self.df_item.sort_values(by=num_ratings_col, inplace=True)
