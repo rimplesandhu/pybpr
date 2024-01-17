@@ -120,7 +120,7 @@ def get_pos_neg_pair_for_this_user(
     num_users, num_items = iumat.shape
     assert iuser < num_users, "user index greater than # of users!"
     pos_items = iumat.indices[iumat.indptr[iuser]:iumat.indptr[iuser + 1]]
-    while not pos_items:  # if cant find pos interations, it swtiches users
+    while len(pos_items) == 0:  # if cant find pos interations, it swtiches users
         iuser = np.random.choice(num_users)
         pos_items = iumat.indices[iumat.indptr[iuser]:iumat.indptr[iuser + 1]]
     pos_item = np.random.choice(pos_items)
