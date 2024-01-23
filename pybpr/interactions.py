@@ -1,13 +1,8 @@
 """Base class for defining Collaboative filtering"""
-from typing import List
-from itertools import islice
 import numpy as np
-from scipy.sparse import csr_matrix, dok_matrix
-from sklearn.preprocessing import normalize
-from sklearn.neighbors import NearestNeighbors
-from .utils import compute_ndcg
+from numpy import ndarray
+from scipy.sparse import csr_matrix, dok_matrix, spmatrix
 
-# import swifter
 # pylint: disable=invalid-name
 
 
@@ -18,8 +13,8 @@ class UserItemInteractions:
 
     def __init__(
         self,
-        items_index: List[int],
-        users_index: List[int],
+        items_index: list[int],
+        users_index: list[int],
         num_items: int = None,
         num_users: int = None,
         name: str = 'Sample',
@@ -48,15 +43,20 @@ class UserItemInteractions:
             num_users = np.amax(users_index) + 1
 
         # create an interaction matrix sparsely filled with ones
-        self.mat = csr_matrix(
-            (np.ones((len(items_index),)), (users_index, items_index)),
+        self._mat = csr_matrix(
+            # (np.ones((len(items_index),)), (users_index, items_index)),
+            (np.repeat(True, len(items_index)), (users_index, items_index)),
             shape=(num_users, num_items),
-            dtype=np.int8
+            dtype=bool
         )
 
+        # # check no empty rows or columns
+        # assert np.amin(self._mat.sum(axis=0)) > 0, 'need atleast 1 entry!'
+        # assert np.amin(self._mat.sum(axis=1)) > 0, 'need atleast 1 entry!'
+
         # create training and test versions of sparse int matrix
-        self.mat_test = csr_matrix(self.mat.shape, dtype=np.int8)
-        self.mat_train = self.mat.copy()
+        self._mat_test = csr_matrix(self.mat.shape, dtype=np.int8)
+        self._mat_train = self.mat.copy()
         print(self.__str__())
 
     def generate_train_test(
@@ -71,8 +71,8 @@ class UserItemInteractions:
 
         if user_test_ratio < 1e-3:
             print('Warning: Test matrix is set as empty/all-zeros')
-            self.mat_test = csr_matrix(self.mat.shape, dtype=np.int8)
-            self.mat_train = self.mat.copy()
+            self._mat_test = csr_matrix(self.mat.shape, dtype=bool)
+            self._mat_train = self.mat.copy()
         else:
             # min number of item interactions required per user
             min_interactions = int(1/user_test_ratio) + 1
@@ -83,86 +83,133 @@ class UserItemInteractions:
 
             # initiate test and train matrices
             np.random.seed(seed=seed)
-            self.mat_test = dok_matrix(self.mat.shape, dtype=np.int8)
-            self.mat_train = self.mat.copy().todok()
+            self._mat_test = dok_matrix(self.mat.shape, dtype=bool)
+            self._mat_train = self.mat.copy().todok()
 
             # iterate over each user and split its interactions into test/train
             for ith_user in valid_users:
-                items_ith_user = self.mat[ith_user].indices
+                items_ith_user = self._mat[ith_user].indices
                 test_size = int(np.ceil(user_test_ratio * items_ith_user.size))
                 ith_items = np.random.choice(
                     items_ith_user,
                     size=test_size,
                     replace=False
                 )
-                self.mat_test[ith_user, ith_items] = 1
-                self.mat_train[ith_user, ith_items] = 0
-            self.mat_test = self.mat_test.tocsr()
-            self.mat_train = self.mat_train.tocsr()
+                self._mat_test[ith_user, ith_items] = True
+                self._mat_train[ith_user, ith_items] = False
+            self._mat_test = self.mat_test.tocsr()
+            self._mat_train = self.mat_train.tocsr()
 
         # check if train+test=original UI mat
         print('done', flush=True)
         if (self.mat_train + self.mat_test != self.mat).nnz != 0:
             raise RuntimeError('Issue with test/train split')
 
-    def users_sorted_by_activity(self, count: int | None = None):
-        """return the most -count- active users"""
-        # get number of interactions for each user
-        count_vector = np.asarray(self.mat.sum(axis=1)).reshape(-1)
-        # get the index of users with most interactions at 0
-        sorted_user_list = count_vector.argsort()[::-1]
-        if count is not None:
-            sorted_user_list = sorted_user_list[:count]
-        return sorted_user_list
+    def __str__(self) -> SyntaxWarning:
+        """Print output"""
+        out_str = f'\n----{self.__class__.__name__}--{self.name}\n'
+        out_str += f'# of users (active/total): {self.num_users_active}/{
+            self.num_users}\n'
+        out_str += f'# of items (active/total): {self.num_items_active}/{
+            self.num_items}\n'
+        out_str += f'# of interactions: {self.mat.nnz}\n'
+        out_str += f'Sparsity in the UI mat: {self.sparsity}\n'
+        R_mb = np.around(self.mat.data.nbytes / 1024 / 1024, 2)
+        out_str += f'Memory used by sparse UI mat: {R_mb} MB'
+        return out_str
 
-    def get_top_items_for_this_user(
-        self,
-        user_idx: int,
-        user_mat,
-        item_mat,
-        num_items: int,
-        exclude_liked: bool = True
-    ):
-        """Returns top products for this user"""
-        user_pred = user_mat[user_idx].dot(item_mat.T)
-        top_inds = np.argsort(user_pred)[::-1]
-        liked = set(
-            self.mat_train[user_idx].indices) if exclude_liked else set()
-        top_n = islice(
-            [ix for ix in top_inds if ix not in liked], int(num_items))
-        # top_val = islice([user_pred[ix]
-        #                  for ix in top_inds if ix not in liked], num_items)
-        return list(top_n)
+    @property
+    def mat(self) -> spmatrix:
+        """Number of users"""
+        return self._mat
 
-    def get_ndcg_metric_user(
-        self,
-        user_idx: int,
-        user_mat,
-        item_mat,
-        num_items: int,
-        test: bool = True,
-        truncate: bool = True
-    ):
-        """Computes NDCG score for this user"""
-        data_mat = self.mat_test if test else self.mat_train
-        test_inds = list(data_mat[user_idx].indices)
-        num_items = min(len(test_inds), num_items) if truncate else num_items
-        exclude_liked = True if test else False
-        top_items = self.get_top_items_for_this_user(
-            user_idx=user_idx,
-            user_mat=user_mat,
-            item_mat=item_mat,
-            num_items=num_items,
-            exclude_liked=exclude_liked
-        )
-        ndcg_score = compute_ndcg(
-            ranked_item_idx=np.where(np.isin(top_items, test_inds))[0],
-            K=num_items,
-            wgt_fun=np.log2
-        )
-        return ndcg_score
+    @property
+    def mat_test(self) -> spmatrix:
+        """Number of users"""
+        return self._mat_test
 
-    # def get_ndcg_metric(
+    @property
+    def mat_train(self) -> spmatrix:
+        """Number of users"""
+        return self._mat_train
+
+    @property
+    def num_users(self) -> int:
+        """Number of users"""
+        return self.mat.shape[0]
+
+    @property
+    def num_items(self) -> int:
+        """Number of users"""
+        return self.mat.shape[1]
+
+    @property
+    def active_users(self) -> ndarray:
+        """Index of users with atleast one interaction"""
+        return np.where(np.asarray(self.mat.sum(axis=1)).reshape(-1) > 0)[0]
+
+    @property
+    def active_items(self) -> ndarray:
+        """Index of items with atleast one interaction"""
+        return np.where(np.asarray(self.mat.sum(axis=0)).reshape(-1) > 0)[0]
+
+    @property
+    def num_users_active(self) -> int:
+        """Number of users"""
+        return self.active_users.size
+
+    @property
+    def num_items_active(self) -> int:
+        """Number of users"""
+        return self.active_items.size
+
+    @property
+    def sparsity(self) -> float:
+        """Get the sparsity"""
+        outs = self.mat.nnz * 1 / (self.num_users * self.num_items)
+        return np.around(outs, 6)
+
+
+# Junk
+    # def users_sorted_by_activity(self, count: int | None = None):
+    #     """return the most -count- active users"""
+    #     # get number of interactions for each user
+    #     count_vector = np.asarray(self._mat.sum(axis=1)).reshape(-1)
+    #     # get the index of users with most interactions at 0
+    #     sorted_user_list = count_vector.argsort()[::-1]
+    #     if count is not None:
+    #         sorted_user_list = sorted_user_list[:count]
+    #     return sorted_user_list
+
+    # def get_ndcg_metric_user(
+    #     self,
+    #     user_idx: int,
+    #     user_mat,
+    #     item_mat,
+    #     num_items: int,
+    #     test: bool = True,
+    #     truncate: bool = True
+    # ):
+    #     """Computes NDCG score for this user"""
+    #     data_mat = self._mat_test if test else self._mat_train
+    #     test_inds = list(data_mat[user_idx].indices)
+    #     num_items = min(len(test_inds), num_items) if truncate else num_items
+    #     exclude_liked = True if test else False
+    #     top_items = self.get_top_items_for_this_user(
+    #         user_idx=user_idx,
+    #         user_mat=user_mat,
+    #         item_mat=item_mat,
+    #         num_items=num_items,
+    #         exclude_liked=exclude_liked
+    #     )
+    #     ndcg_score = compute_ndcg(
+    #         ranked_item_idx=np.where(np.isin(top_items, test_inds))[0],
+    #         K=num_items,
+    #         wgt_fun=np.log2
+    #     )
+    #     return ndcg_score
+
+    # # def get_ndcg_metric(
     #     self,
     #     user_mat,
     #     item_mat,
@@ -194,77 +241,29 @@ class UserItemInteractions:
     #             ndcg_scores = p.map(pfunc, chosen_users)
     #     return np.mean(ndcg_scores)
 
-    def get_similar(
-        self,
-        feature_mat,
-        idx: int,
-        count: int = 5
-    ):
-        """
-        Get similar pairs, items or users
-        """
-        # cosine distance is proportional to normalized euclidean distance,
-        # thus we normalize the item vectors and use euclidean metric so
-        # we can use the more efficient kd-tree for nearest neighbor search;
-        # also the item will always to nearest to itself, so we add 1 to
-        # get an additional nearest item and remove itself at the end
-        normed_factors = normalize(feature_mat)
-        knn = NearestNeighbors(n_neighbors=count + 1, metric='euclidean')
-        knn.fit(normed_factors)
-        normed_factors = np.atleast_2d(normed_factors[idx])
-        _, inds = knn.kneighbors(normed_factors)
-        similar_inds = list(np.squeeze(inds.astype(np.uint32)))
-        similar_inds = [ix for ix in similar_inds if ix != idx]
-        return similar_inds
+    # def get_similar(
+    #     self,
+    #     feature_mat,
+    #     idx: int,
+    #     count: int = 5
+    # ):
+    #     """
+    #     Get similar pairs, items or users
+    #     """
+    #     # cosine distance is proportional to normalized euclidean distance,
+    #     # thus we normalize the item vectors and use euclidean metric so
+    #     # we can use the more efficient kd-tree for nearest neighbor search;
+    #     # also the item will always to nearest to itself, so we add 1 to
+    #     # get an additional nearest item and remove itself at the end
+    #     normed_factors = normalize(feature_mat)
+    #     knn = NearestNeighbors(n_neighbors=count + 1, metric='euclidean')
+    #     knn.fit(normed_factors)
+    #     normed_factors = np.atleast_2d(normed_factors[idx])
+    #     _, inds = knn.kneighbors(normed_factors)
+    #     similar_inds = list(np.squeeze(inds.astype(np.uint32)))
+    #     similar_inds = [ix for ix in similar_inds if ix != idx]
+    #     return similar_inds
 
-    def __str__(self) -> SyntaxWarning:
-        """Print output"""
-        out_str = f'----{self.__class__.__name__}--{self.name}\n'
-        out_str += f'# of users (active/total): {self.num_users_active}/{
-            self.num_users}\n'
-        out_str += f'# of items (active/total): {self.num_items_active}/{
-            self.num_items}\n'
-        out_str += f'# of interactions: {self.mat.nnz}\n'
-        out_str += f'Sparsity in the UI mat: {self.sparsity}\n'
-        R_mb = np.around(self.mat.data.nbytes / 1024 / 1024, 2)
-        out_str += f'Memory used by sparse UI mat: {R_mb} MB\n'
-        return out_str
-
-    @property
-    def num_users(self):
-        """Number of users"""
-        return self.mat.shape[0]
-
-    @property
-    def num_items(self):
-        """Number of users"""
-        return self.mat.shape[1]
-
-    @property
-    def active_users(self):
-        """Index of users with atleast one interaction"""
-        return np.where(np.asarray(self.mat.sum(axis=1)).reshape(-1) > 0)[0]
-
-    @property
-    def active_items(self):
-        """Index of items with atleast one interaction"""
-        return np.where(np.asarray(self.mat.sum(axis=0)).reshape(-1) > 0)[0]
-
-    @property
-    def num_users_active(self):
-        """Number of users"""
-        return self.active_users.size
-
-    @property
-    def num_items_active(self):
-        """Number of users"""
-        return self.active_items.size
-
-    @property
-    def sparsity(self):
-        """Get the sparsity"""
-        outs = self.mat.nnz * 1 / (self.num_users * self.num_items)
-        return np.around(outs, 6)
 
 # cf_8user_10item = UserItemInteractions(
 #     users=[1, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4,
@@ -314,10 +313,10 @@ class UserItemInteractions:
 # self.df_item.drop(columns=('index'))
 # u_inds = self.df_user[user_col].cat.codes.values
 # i_inds = self.df_item[self.item_col].cat.codes.values
-# self.df_user['NumRatings_Train'] = self.mat_train.sum(axis=1)[u_inds, 0]
-# self.df_user['NumRatings_Test'] = self.mat_test.sum(axis=1)[u_inds, 0]
-# self.df_item['NumRatings_Train'] = self.mat_train.sum(axis=0)[0, i_inds]
-# self.df_item['NumRatings_Test'] = self.mat_test.sum(axis=0)[0, i_inds]
+# self.df_user['NumRatings_Train'] = self._mat_train.sum(axis=1)[u_inds, 0]
+# self.df_user['NumRatings_Test'] = self._mat_test.sum(axis=1)[u_inds, 0]
+# self.df_item['NumRatings_Train'] = self._mat_train.sum(axis=0)[0, i_inds]
+# self.df_item['NumRatings_Test'] = self._mat_test.sum(axis=0)[0, i_inds]
 
 # def get_top_items_for_this_user(
 #     self,

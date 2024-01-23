@@ -12,6 +12,57 @@ import scipy.sparse as sp
 from numpy import ndarray
 
 
+def get_indices_sorted_by_activity(
+    uimat: spmatrix,
+    axis: int,  # 0=row, 1=column
+    count: int | None = None
+):
+    """return the most -count- active users (axis=0) or items"""
+    # get number of interactions for each user
+    count_vector = np.asarray(uimat.sum(axis=axis)).reshape(-1)
+    # get the index of users with most interactions at 0
+    sorted_list = count_vector.argsort()[::-1]
+    if count is not None:
+        sorted_list = sorted_list[:count]
+    return sorted_list
+
+
+def generate_user_item_indices(
+    parent_df: pd.DataFrame,
+    children_dfs: list[pd.DataFrame] = None,
+    userid_column: str = 'user_id',
+    itemid_column: str = 'item_id',
+    index_suffix: str = 'x'
+
+):
+    """Function for appending user item indices to dataframe"""
+    for cname in [userid_column, itemid_column]:
+        parent_df[cname] = parent_df[cname].astype('category')
+        idx_cname = f'{cname}{index_suffix}'
+        parent_df[idx_cname] = parent_df[cname].cat.codes.astype(int)
+        if children_dfs is not None:
+            for idf in children_dfs:
+                if cname in idf.columns:
+                    idf[cname] = pd.Categorical(
+                        idf[cname],
+                        categories=parent_df[cname].unique(),
+                        ordered=False
+                    )
+                    idf[idx_cname] = idf[cname].cat.codes.astype(int)
+    if children_dfs is None:
+        return parent_df
+    else:
+        return parent_df, children_dfs
+
+
+def get_cdf(data, **kwargs):
+    """returns cdf"""
+    count, bins_count = np.histogram(data, **kwargs)
+    pdf = count / sum(count)
+    cdf = np.cumsum(pdf)
+    return bins_count[1:], cdf
+
+
 def get_most_active_users_from_uimat(uimat, count: int | None = None):
     """return the most -count- active users"""
     # get number of interactions for each user
@@ -151,19 +202,19 @@ def compute_mse(y_true, y_pred):
     return mse
 
 
-def load_movielens_data(flag='ml-100k'):
+def load_movielens_data(data_dir, flag='ml-100k'):
     """Function to read movielens data"""
     names = ['user_id', 'item_id', 'rating', 'timestamp']
     if flag == 'ml-100k':
-        file_path = os.path.join(os.path.curdir, 'data', flag, 'u.data')
+        file_path = os.path.join(data_dir, flag, 'u.data')
         df = pd.read_csv(file_path, sep='\t', names=names)
         return df
     elif flag == 'ml-1m':
-        file_path = os.path.join(os.path.curdir, 'data', flag, 'ratings.dat')
+        file_path = os.path.join(data_dir, flag, 'ratings.dat')
         df = pd.read_csv(file_path, sep='::', names=names, engine='python')
         return df
     elif flag == 'ml-10M100K':
-        file_path = os.path.join(os.path.curdir, 'data', flag, 'ratings.dat')
+        file_path = os.path.join(data_dir, flag, 'ratings.dat')
         df = pd.read_csv(file_path, sep='::', names=names, engine='python')
         return df
     else:

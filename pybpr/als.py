@@ -1,6 +1,5 @@
 """Base class for implementing matrix factorization"""
 from functools import partial
-import pathos.multiprocessing as mp
 import numpy as np
 import scipy as sp
 import scipy.sparse as ss
@@ -120,7 +119,7 @@ class MF_WALS:
         if self.verbose:
             loop = trange(self.num_iters, desc=self.__class__.__name__)
         for _ in loop:
-            #print(j, end="-", flush=True)
+            # print(j, end="-", flush=True)
             self.user_mat = self.update(
                 train_mat, self.item_mat, item_wgt_tensor)
             self.item_mat = self.update(

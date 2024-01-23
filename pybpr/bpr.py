@@ -1,14 +1,17 @@
 """Base class for implementing matrix factorization"""
 from dataclasses import dataclass
+from typing import Callable
 import sys
 from functools import partial
 import numpy as np
-from scipy.sparse import spmatrix
+from scipy.sparse import spmatrix, csr_matrix
 from scipy.special import expit
 from tqdm import tqdm
 from pathos.pools import ProcessPool, ParallelPool
 import multiprocessing as mp
 from .utils import create_shared_memory_nparray, release_shared
+from .utils import get_indices_sorted_by_activity
+
 # pylint: disable=invalid-name
 
 
@@ -35,7 +38,8 @@ class BPR:
 
     def initiate(
         self,
-        uimat,
+        num_users: int,
+        num_items: int,
         seed: int = 1234
     ):
         """Initiate fitting"""
@@ -43,14 +47,16 @@ class BPR:
         # # generate randomly sleetced user indices for trainin
 
         # Initialize user and item matrix
-        self.num_users = uimat.shape[0]
-        self.num_items = uimat.shape[1]
+        # self.num_users = uimat.shape[0]
+        # self.num_items = uimat.shape[1]
+        self.num_users = num_users
+        self.num_items = num_items
 
         # check if batch size is less than num_users
         if self.num_users < self.batch_size:
             self.batch_size = self.num_users
-            print('WARNING: Batch size was assigned greater than # of users')
-            print(f'Setting batch size to {self.num_users}\n')
+            print('WARNING: Batch size assigned > # of users')
+            print(f'Setting batch size to {self.num_users}')
         else:
             self.batch_size = self.batch_size
 
@@ -76,6 +82,28 @@ class BPR:
             name='imat',
         )
 
+    def get_recomendations_for_this_user(
+        self,
+        user_idx: int,
+        num_recs: int = 1,
+        # exclude_liked: bool = True
+    ):
+        """Returns top products for this user"""
+        rec_mat = self.umat[user_idx].dot(self.imat.T)
+        print(rec_mat.shape)
+        top_rec_inds = np.argpartition(
+            a=-1*rec_mat,  # the recomendation matrix, -1 to counter ascending sort
+            kth=num_recs-1,  # where to partition
+            # axis=1  # sort it along the column, i.e. for each user
+        )
+        # liked = set(
+        #     self.mat_train[user_idx].indices) if exclude_liked else set()
+        # top_n = islice(
+        #     [ix for ix in top_inds if ix not in liked], int(num_items))
+        # # top_val = islice([user_pred[ix]
+        #                  for ix in top_inds if ix not in liked], num_items)
+        return list(top_rec_inds[:num_recs])
+
     def sample_users(self):
         """creates a list of randonly selected users for all iterations"""
         smp_fn = partial(
@@ -87,6 +115,71 @@ class BPR:
         user_list = [smp_fn() for _ in range(self.num_iters)]
         user_list = np.array(user_list).ravel()
         return user_list
+
+    def get_metric_v1(
+        self,
+        uimat: spmatrix,  # user-item matrix
+        perc_active_users: float,  # consider only top -- percentage of users
+        perc_active_items: float,  # consider only top -- percentage of users
+        num_recs: int,  # number of recomendations
+    ):
+        """"Compute the metric"""
+        # get the index of top --user_count-- users
+        selected_users = get_indices_sorted_by_activity(
+            uimat=uimat,
+            axis=1,
+            count=int(perc_active_users*self.num_users)
+        )
+        selected_items = get_indices_sorted_by_activity(
+            uimat=uimat,
+            axis=0,
+            count=int(perc_active_items*self.num_items)
+        )
+
+        # slice the user/item matrix for those selected indices
+        umat_sliced = self.umat.take(selected_users, axis=0)
+        imat_sliced = self.imat.take(selected_items, axis=0)
+
+        # dot product of user and item matrix
+        # this scales poorly with number of users and items
+        rec_mat = umat_sliced.dot(imat_sliced.T)
+
+        # get indices of top rec_count recomendations
+        # argpartition does not care about the order but gets top n right
+        # argpartition faster than argsort if we dont care about order in top n
+        num_recs = min(num_recs, len(selected_items))
+        top_rec_inds = np.argpartition(
+            a=-1*rec_mat,  # the recomendation matrix, -1 to counter ascending sort
+            kth=num_recs-1,  # where to partition
+            axis=1  # sort it along the column, i.e. for each user
+        )
+        top_rec_inds = top_rec_inds[:, :num_recs]
+        top_rec_inds = selected_items.take(top_rec_inds)
+
+        # create a dummy user-item matrix with the recs obtained above
+        dummy_rec_mat = csr_matrix(
+            (np.repeat(True, len(selected_users)*num_recs),
+             (np.repeat(selected_users, num_recs), np.ravel(top_rec_inds))),
+            dtype=bool,
+            shape=(self.num_users, self.num_items)
+        )
+
+        # for each selected user, compute the recs present in either
+        # the rec matrix or in ui matrix, not both
+        nonoverlap_count = np.asarray((dummy_rec_mat-uimat).sum(axis=1))
+        nonoverlap_count = nonoverlap_count.reshape(-1).take(selected_users)
+
+        # For each selected user, compute the # of interactions present
+        interaction_count = np.asarray(uimat.sum(axis=1))
+        interaction_count = interaction_count.reshape(-1).take(selected_users)
+
+        # this gets us the perc of recs found in
+        overlap_ratio = np.divide(
+            interaction_count + num_recs - nonoverlap_count,
+            2*np.minimum(interaction_count, num_recs),
+
+        )
+        return np.quantile(overlap_ratio, [0.25, 0.5, 0.75])
 
     def release_shm(self):
         """Release shared memory"""
@@ -111,38 +204,43 @@ class BPR:
         return imat.reshape(self.num_items, self.num_features)
 
 
-def get_pos_neg_pair_for_this_user(
-        iumat: spmatrix,
+def uniform_negative_sampler(
+        uimat: spmatrix,
         iuser: int
 ):
     """Generate tuple of (user, pos_item, neg_item)"""
-    assert isinstance(iumat, spmatrix), "Need a scipy sparse matrix!"
-    num_users, num_items = iumat.shape
+    assert isinstance(uimat, spmatrix), "Need a scipy sparse matrix!"
+    num_users, num_items = uimat.shape
     assert iuser < num_users, "user index greater than # of users!"
-    pos_items = iumat.indices[iumat.indptr[iuser]:iumat.indptr[iuser + 1]]
+    pos_items = uimat.indices[uimat.indptr[iuser]:uimat.indptr[iuser + 1]]
     while len(pos_items) == 0:  # if cant find pos interations, it swtiches users
         iuser = np.random.choice(num_users)
-        pos_items = iumat.indices[iumat.indptr[iuser]:iumat.indptr[iuser + 1]]
+        pos_items = uimat.indices[uimat.indptr[iuser]:uimat.indptr[iuser + 1]]
     pos_item = np.random.choice(pos_items)
     neg_item = np.random.choice(num_items)
     while neg_item in pos_items:
         neg_item = np.random.choice(num_items)
-    return (iuser, pos_item, neg_item)
+    return (pos_item, neg_item)
 
 
-def bpr_update_step(this_user, bpr_obj, iumat):
+def bpr_update(
+        this_user: int,
+        bpr_obj: BPR,
+        negative_sampler: Callable[[int], tuple[int, int]]
+):
     """Update user and item matrix"""
 
-    # extract columns for specific u, i, j
-    user_u = bpr_obj.umat[this_user]
-    _, item_ith, item_jth = get_pos_neg_pair_for_this_user(
-        iumat, this_user)
+    # get pos-neg pair and extract the vectors for those pair
+    item_ith, item_jth = negative_sampler(iuser=this_user)
     item_i = bpr_obj.imat[item_ith]
     item_j = bpr_obj.imat[item_jth]
+    user_u = bpr_obj.umat[this_user]
 
     # actual computation
     r_uij = np.dot(user_u, (item_i - item_j))
-    sigmoid = expit(r_uij)
+    # r_uij_new = np.sum(user_u * (item_i - item_j))
+    sigmoid = expit(-r_uij)
+    # sigmoid_new = np.exp(-r_uij) / (1.0 + np.exp(-r_uij))
     sigmoid_tiled = np.tile(sigmoid, (bpr_obj.num_features,))
     grad_u = np.multiply(sigmoid_tiled, (item_j - item_i))
     grad_u += bpr_obj.reg_lambda * user_u
@@ -153,10 +251,9 @@ def bpr_update_step(this_user, bpr_obj, iumat):
     bpr_obj.umat[this_user] -= bpr_obj.learning_rate * grad_u
     bpr_obj.imat[item_ith] -= bpr_obj.learning_rate * grad_i
     bpr_obj.imat[item_jth] -= bpr_obj.learning_rate * grad_j
-    return 0
 
 
-def bpr_fit(bpr_obj, iumat, ncores):
+def bpr_fit(bpr_obj, neg_sampler, ncores):
     """fit function"""
     user_list = bpr_obj.sample_users()
     user_list = np.array(user_list).ravel()
@@ -166,16 +263,19 @@ def bpr_fit(bpr_obj, iumat, ncores):
         position=0,
         leave=True,
         file=sys.stdout,
-        desc='Fit'
+        desc='BPR-Fit'
     )
-    fn = partial(bpr_update_step, bpr_obj=bpr_obj, iumat=iumat)
+    fn = partial(
+        bpr_update,
+        bpr_obj=bpr_obj,
+        negative_sampler=neg_sampler
+    )
     if ncores == 1:
-        results = [fn(ix) for ix in user_list]
+        _ = [fn(ix) for ix in pbar]
     else:
-        # with pa.pools.ParallelPool(ncpus=ncores) as p:
+        # with ParallelPool(ncpus=ncores) as p:
         with mp.Pool(ncores) as p:
-            results = p.map(fn, pbar)
-    return results
+            p.map(fn, pbar)
 
 
 # junk
