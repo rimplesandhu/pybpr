@@ -1,7 +1,12 @@
-"""Class for sparse svd"""
+"""
+Class for sparse svd
+
+Author: Rimple Sandhu
+Email: rimple.sandhu@outlook.com
+"""
 import numpy as np
 from scipy.sparse import linalg
-#pylint: disable=invalid-name
+# pylint: disable=invalid-name
 
 
 class MF_SVD:

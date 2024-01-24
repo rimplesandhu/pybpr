@@ -1,14 +1,19 @@
-"""Base class for implementing matrix factorization"""
+"""
+Base class for implementing BPR
+
+Author: Rimple Sandhu
+Email: rimple.sandhu@outlook.com
+"""
 from dataclasses import dataclass
 from typing import Callable
 import sys
 from functools import partial
+import multiprocessing as mp
 import numpy as np
 from scipy.sparse import spmatrix, csr_matrix
 from scipy.special import expit
 from tqdm import tqdm
-from pathos.pools import ProcessPool, ParallelPool
-import multiprocessing as mp
+# from pathos.pools import ProcessPool, ParallelPool
 from .utils import create_shared_memory_nparray, release_shared
 from .utils import get_indices_sorted_by_activity
 
@@ -44,11 +49,7 @@ class BPR:
     ):
         """Initiate fitting"""
 
-        # # generate randomly sleetced user indices for trainin
-
         # Initialize user and item matrix
-        # self.num_users = uimat.shape[0]
-        # self.num_items = uimat.shape[1]
         self.num_users = num_users
         self.num_items = num_items
 
@@ -125,6 +126,7 @@ class BPR:
     ):
         """"Compute the metric"""
         # get the index of top --user_count-- users
+        # print('Computing BPR metric v1..', end="", flush=True)
         selected_users = get_indices_sorted_by_activity(
             uimat=uimat,
             axis=1,
@@ -179,6 +181,7 @@ class BPR:
             2*np.minimum(interaction_count, num_recs),
 
         )
+        # print('done', flush=True)
         return np.quantile(overlap_ratio, [0.25, 0.5, 0.75])
 
     def release_shm(self):
@@ -202,25 +205,6 @@ class BPR:
         """Get item matrix"""
         imat = np.frombuffer(self.imat_shm.buf)
         return imat.reshape(self.num_items, self.num_features)
-
-
-def uniform_negative_sampler(
-        uimat: spmatrix,
-        iuser: int
-):
-    """Generate tuple of (user, pos_item, neg_item)"""
-    assert isinstance(uimat, spmatrix), "Need a scipy sparse matrix!"
-    num_users, num_items = uimat.shape
-    assert iuser < num_users, "user index greater than # of users!"
-    pos_items = uimat.indices[uimat.indptr[iuser]:uimat.indptr[iuser + 1]]
-    while len(pos_items) == 0:  # if cant find pos interations, it swtiches users
-        iuser = np.random.choice(num_users)
-        pos_items = uimat.indices[uimat.indptr[iuser]:uimat.indptr[iuser + 1]]
-    pos_item = np.random.choice(pos_items)
-    neg_item = np.random.choice(num_items)
-    while neg_item in pos_items:
-        neg_item = np.random.choice(num_items)
-    return (pos_item, neg_item)
 
 
 def bpr_update(

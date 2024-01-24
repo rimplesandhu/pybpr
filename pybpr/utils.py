@@ -1,4 +1,10 @@
-"""Utilities"""
+"""
+Script for utility functions
+
+Author: Rimple Sandhu
+Email: rimple.sandhu@outlook.com
+"""
+
 # pylint: disable=invalid-name
 
 import os
@@ -51,8 +57,8 @@ def generate_user_item_indices(
                     idf[idx_cname] = idf[cname].cat.codes.astype(int)
     if children_dfs is None:
         return parent_df
-    else:
-        return parent_df, children_dfs
+
+    return parent_df, children_dfs
 
 
 def get_cdf(data, **kwargs):

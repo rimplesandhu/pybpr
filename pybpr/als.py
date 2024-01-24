@@ -1,4 +1,9 @@
-"""Base class for implementing matrix factorization"""
+"""
+Base class for implementing matrix factorization using alternating LS
+
+Author: Rimple Sandhu
+Email: rimple.sandhu@outlook.com
+"""
 from functools import partial
 import numpy as np
 import scipy as sp

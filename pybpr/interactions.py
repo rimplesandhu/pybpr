@@ -1,4 +1,10 @@
-"""Base class for defining Collaboative filtering"""
+"""
+Base class for defining User-Item interaction data
+
+Author: Rimple Sandhu
+Email: rimple.sandhu@outlook.com
+"""
+
 import numpy as np
 from numpy import ndarray
 from scipy.sparse import csr_matrix, dok_matrix, spmatrix
@@ -70,7 +76,7 @@ class UserItemInteractions:
         assert user_test_ratio >= 0.0, 'user_test_ratio should be in [0,0.5]'
 
         if user_test_ratio < 1e-3:
-            print('Warning: Test matrix is set as empty/all-zeros')
+            print('Warning: Test matrix is set as empty/all-zeros', flush=True)
             self._mat_test = csr_matrix(self.mat.shape, dtype=bool)
             self._mat_train = self.mat.copy()
         else:
@@ -99,9 +105,9 @@ class UserItemInteractions:
                 self._mat_train[ith_user, ith_items] = False
             self._mat_test = self.mat_test.tocsr()
             self._mat_train = self.mat_train.tocsr()
+            print('done', flush=True)
 
         # check if train+test=original UI mat
-        print('done', flush=True)
         if (self.mat_train + self.mat_test != self.mat).nnz != 0:
             raise RuntimeError('Issue with test/train split')
 
