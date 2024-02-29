@@ -4,6 +4,7 @@ Base class for implementing BPR
 Author: Rimple Sandhu
 Email: rimple.sandhu@outlook.com
 """
+import os
 from dataclasses import dataclass
 from typing import Callable
 import sys
@@ -26,12 +27,13 @@ class BPR:
     Bayesian Personalized Ranking (BPR)
     """
 
-    num_features: int  # number of features in user/item matrices
-    num_iters: int  # number of iterations
-    batch_size: int  # number of users selected per iteration, < num_users
-    initial_std: float  # initial strength of gaussian dist to fill user/item
-    reg_lambda: float  # regularization constant
-    learning_rate: float  # learning rate fior sgd
+    mname: str = 'bpr_model'  # name of the model
+    num_features: int = 10  # number of features in user/item matrices
+    num_iters: int = 100  # number of iterations
+    batch_size: int = 32  # number of users selected per iteration, < num_users
+    initial_std: float = 0.0001  # initial strength of gaussian dist to fill user/item
+    reg_lambda: float = 0.0  # regularization constant
+    learning_rate: float = 0.001  # learning rate fior sgd
     verbose: bool = False  # prints additional info when true
 
     # user item matrices
@@ -48,19 +50,11 @@ class BPR:
         seed: int = 1234
     ):
         """Initiate fitting"""
-
-        # Initialize user and item matrix
         self.num_users = num_users
         self.num_items = num_items
+        self._check_dims()
 
-        # check if batch size is less than num_users
-        if self.num_users < self.batch_size:
-            self.batch_size = self.num_users
-            print('WARNING: Batch size assigned > # of users')
-            print(f'Setting batch size to {self.num_users}')
-        else:
-            self.batch_size = self.batch_size
-
+        # initiate user and item matrices
         np.random.seed(seed)
         umat = np.random.normal(
             loc=0.,
@@ -72,8 +66,20 @@ class BPR:
             scale=self.initial_std,
             size=(self.num_items, self.num_features)
         )
+        self._create_shm(umat=umat, imat=imat)
 
-        # create shared memory objects for user and item matrix
+    def _check_dims(self):
+        """check validatity of num_users, num_items and batch_size"""
+        # check if batch size is less than num_users
+        if self.num_users < self.batch_size:
+            self.batch_size = self.num_users
+            print('WARNING: Batch size assigned > # of users')
+            print(f'Setting batch size to {self.num_users}')
+        else:
+            self.batch_size = self.batch_size
+
+    def _create_shm(self, umat: np.ndarray, imat: np.ndarray) -> None:
+        """Create shared memory objects"""
         self.umat_shm = create_shared_memory_nparray(
             data=umat,
             name='umat',
@@ -82,6 +88,27 @@ class BPR:
             data=imat,
             name='imat',
         )
+
+    def save_model(self, dir_name: str) -> None:
+        """Save the model"""
+        print(f'Saving the model in {dir_name}', flush=True)
+        np.savez(
+            file=os.path.join(dir_name, self.mname),
+            umat=self.umat,
+            imat=self.imat
+        )
+
+    def load_model(self, dir_name: str) -> None:
+        """Save the model"""
+        print(f'Loading the model from {dir_name}', flush=True)
+        npzfile = np.load(os.path.join(dir_name, f'{self.mname}.npz'))
+        print(npzfile, npzfile['umat'].shape)
+        umat = npzfile['umat']
+        imat = npzfile['imat']
+        self.num_users = umat.shape[0]
+        self.num_items = imat.shape[0]
+        self.num_features = umat.shape[1]
+        self._create_shm(umat=umat, imat=imat)
 
     def get_recomendations_for_this_user(
         self,

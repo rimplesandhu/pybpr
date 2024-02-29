@@ -70,3 +70,8 @@ def explicit_negative_sampler(
         neg_item = np.random.choice(neg_items)
 
     return (pos_item, neg_item)
+
+
+# viewed not clicked at the time of click is more important
+# clicked not ordered at the time of order is more important
+# further way to narrow your negative sampling space

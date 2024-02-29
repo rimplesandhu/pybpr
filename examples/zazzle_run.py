@@ -18,7 +18,7 @@ if __name__ == "__main__":
     df_c_not_o = pd.read_parquet(os.path.join(
         DATA_DIR, 'clicked_not_ordered_data.parquet'))
 
-    test_ratio = 0.25
+    test_ratio = 0.0
 
     # viewed
     num_users = df_v['user_idx'].max()+1
@@ -81,13 +81,13 @@ if __name__ == "__main__":
         if neg_data is not None:
             neg_sampler = partial(
                 explicit_negative_sampler,
-                pos_uimat=pos_data.mat_train,
+                pos_uimat=pos_data.mat,
                 neg_uimat=neg_data.mat
             )
         else:
             neg_sampler = partial(
                 uniform_negative_sampler,
-                uimat=pos_data.mat_train
+                uimat=pos_data.mat
             )
 
         try:
@@ -96,10 +96,10 @@ if __name__ == "__main__":
                 bpr_fit(
                     bpr_obj=this_bpr,
                     neg_sampler=neg_sampler,
-                    ncores=104
+                    ncores=208
                 )
                 imetric = this_bpr.get_metric_v1(
-                    uimat=pos_data.mat_test,
+                    uimat=pos_data.mat,
                     perc_active_users=0.95,
                     perc_active_items=0.75,
                     num_recs=60
@@ -118,7 +118,7 @@ if __name__ == "__main__":
         batch_size=15000,
         initial_std=0.0001,
     )
-    num_runs = 50
+    num_total_runs = 100
 
     # simulations
 
@@ -126,41 +126,49 @@ if __name__ == "__main__":
         pos_data=data_clicked,
         neg_data=data_viewed_not_clicked,
         this_bpr=bpr_run,
-        num_runs=num_runs,
-        name='run3_pos_clicked_neg_viewed_not_clicked_test'
+        num_runs=num_total_runs,
+        name='run3_pos_clicked_neg_viewed_not_clicked'
     )
 
     run_simulation(
         pos_data=data_clicked,
         neg_data=None,
         this_bpr=bpr_run,
-        num_runs=num_runs,
-        name='run3_pos_clicked_test'
+        num_runs=num_total_runs,
+        name='run3_pos_clicked'
     )
 
     run_simulation(
         pos_data=data_ordered,
         neg_data=data_clicked_not_ordered,
         this_bpr=bpr_run,
-        num_runs=num_runs,
-        name='run3_pos_ordered_neg_clicked_not_ordered_test'
+        num_runs=num_total_runs,
+        name='run3_pos_ordered_neg_clicked_not_ordered'
+    )
+
+    run_simulation(
+        pos_data=data_ordered,
+        neg_data=data_clicked_not_ordered,
+        this_bpr=bpr_run,
+        num_runs=num_total_runs,
+        name='run3_pos_ordered_neg_viewed_not_clicked'
     )
 
     run_simulation(
         pos_data=data_ordered,
         neg_data=None,
         this_bpr=bpr_run,
-        num_runs=num_runs,
-        name='run3_pos_ordered_test'
+        num_runs=num_total_runs,
+        name='run3_pos_ordered'
     )
 
-    # run_simulation(
-    #     pos_data=data_viewed,
-    #     neg_data=None,
-    #     this_bpr=bpr_run,
-    #     num_runs=num_runs,
-    #     name='run3_pos_viewed'
-    # )
+    run_simulation(
+        pos_data=data_viewed,
+        neg_data=None,
+        this_bpr=bpr_run,
+        num_runs=num_total_runs,
+        name='run3_pos_viewed'
+    )
 
     # dont forget to release shared moemory, NREL HPC HATES THIS!!
     bpr_run.release_shm()
