@@ -24,6 +24,7 @@ class UserItemInteractions:
         num_items: int = None,
         num_users: int = None,
         name: str = 'Sample',
+        weights: list[int] | None = None
     ):
         # Initiate
         items_index = np.asarray(items_index, dtype=np.int64)
@@ -49,23 +50,45 @@ class UserItemInteractions:
             num_users = np.amax(users_index) + 1
 
         # create an interaction matrix sparsely filled with ones
-        self._mat = csr_matrix(
-            # (np.ones((len(items_index),)), (users_index, items_index)),
-            (np.repeat(True, len(items_index)), (users_index, items_index)),
-            shape=(num_users, num_items),
-            dtype=bool
-        )
+        if weights is None:
+            self.dtype = bool
+            self._mat = csr_matrix(
+                # (np.ones((len(items_index),)), (users_index, items_index)),
+                (np.repeat(True, len(items_index)), (users_index, items_index)),
+                shape=(num_users, num_items),
+                dtype=self.dtype
+            )
+        else:
+            self.dtype = np.float16
+            self._mat = csr_matrix(
+                # (np.ones((len(items_index),)), (users_index, items_index)),
+                (weights, (users_index, items_index)),
+                shape=(num_users, num_items),
+                dtype=self.dtype
+            )
 
         # # check no empty rows or columns
         # assert np.amin(self._mat.sum(axis=0)) > 0, 'need atleast 1 entry!'
         # assert np.amin(self._mat.sum(axis=1)) > 0, 'need atleast 1 entry!'
 
         # create training and test versions of sparse int matrix
-        self._mat_test = csr_matrix(self.mat.shape, dtype=np.int8)
-        self._mat_train = self.mat.copy()
-        print(self.__str__())
+        self._mat_test = None
+        # print(self.__str__())
 
-    def generate_train_test(
+    def create_test_matrix(
+        self,
+        items_index: list[int],
+        users_index: list[int]
+    ):
+        """Create test matrix"""
+        self._mat_test = csr_matrix(
+            # (np.ones((len(items_index),)), (users_index, items_index)),
+            (np.repeat(True, len(items_index)), (users_index, items_index)),
+            shape=self.mat.shape,
+            dtype=self.dtype
+        )
+
+    def generate_train_test_split(
         self,
         user_test_ratio: float = 0.2,
         seed: int = 1234
@@ -77,8 +100,8 @@ class UserItemInteractions:
 
         if user_test_ratio < 1e-3:
             print('Warning: Test matrix is set as empty/all-zeros', flush=True)
-            self._mat_test = csr_matrix(self.mat.shape, dtype=bool)
-            self._mat_train = self.mat.copy()
+            self._mat_test = csr_matrix(self.mat.shape, dtype=self.dtype)
+            _mat_train = self.mat.copy()
         else:
             # min number of item interactions required per user
             min_interactions = int(1/user_test_ratio) + 1
@@ -89,8 +112,8 @@ class UserItemInteractions:
 
             # initiate test and train matrices
             np.random.seed(seed=seed)
-            self._mat_test = dok_matrix(self.mat.shape, dtype=bool)
-            self._mat_train = self.mat.copy().todok()
+            self._mat_test = dok_matrix(self.mat.shape, dtype=self.dtype)
+            _mat_train = self.mat.copy().todok()
 
             # iterate over each user and split its interactions into test/train
             for ith_user in valid_users:
@@ -102,9 +125,9 @@ class UserItemInteractions:
                     replace=False
                 )
                 self._mat_test[ith_user, ith_items] = True
-                self._mat_train[ith_user, ith_items] = False
+                _mat_train[ith_user, ith_items] = False
             self._mat_test = self.mat_test.tocsr()
-            self._mat_train = self.mat_train.tocsr()
+            self._mat = _mat_train.tocsr()
             print('done', flush=True)
 
         # check if train+test=original UI mat
@@ -113,15 +136,36 @@ class UserItemInteractions:
 
     def __str__(self) -> SyntaxWarning:
         """Print output"""
-        out_str = f'\n----{self.__class__.__name__}--{self.name}\n'
-        out_str += f'# of users (active/total): {self.num_users_active}/{
-            self.num_users}\n'
-        out_str += f'# of items (active/total): {self.num_items_active}/{
-            self.num_items}\n'
-        out_str += f'# of interactions: {self.mat.nnz}\n'
-        out_str += f'Sparsity in the UI mat: {self.sparsity}\n'
-        R_mb = np.around(self.mat.data.nbytes / 1024 / 1024, 2)
-        out_str += f'Memory used by sparse UI mat: {R_mb} MB'
+        out_str = f'\n---{self.name}---\n'
+
+        # training mat
+        ival = np.unique(self.mat_train.tocoo().row).size
+        out_str += f'# of users, train: {ival}/{self.num_users}\n'
+        ival = np.unique(self.mat_train.tocoo().col).size
+        out_str += f'# of items, train: {ival}/{self.num_items}\n'
+
+        # test mat
+        if self.mat_test is not None:
+            ival = np.unique(self.mat_test.tocoo().row).size
+            out_str += f'# of users, test: {ival}/{self.num_users}\n'
+            ival = np.unique(self.mat_test.tocoo().col).size
+            out_str += f'# of items, test: {ival}/{self.num_items}\n'
+        # out_str += f'# of interactions: {self.mat.nnz}\n'
+
+        # interations
+        out_str += f'# of interactions, train: {self.mat_train.nnz}\n'
+        if self.mat_test is not None:
+            out_str += f'# of interactions, test: {self.mat_test.nnz}\n'
+
+        # sparsity
+        # train_s = self.mat_train.nnz / (self.num_users * self.num_items)
+        # test_s = self.mat_test.nnz / (self.num_users * self.num_items)
+        # out_str += f'Sparsity in the train/test mat: {train_s}/{test_s}\n'
+
+        # memory usage
+        train_mb = np.around(self.mat_train.data.nbytes / 1024 / 1024, 2)
+        test_mb = np.around(self.mat_test.data.nbytes / 1024 / 1024, 2)
+        out_str += f'Memory used by train/test mat: {train_mb}/{test_mb} MB'
         return out_str
 
     @property
@@ -137,7 +181,7 @@ class UserItemInteractions:
     @property
     def mat_train(self) -> spmatrix:
         """Number of users"""
-        return self._mat_train
+        return self._mat
 
     @property
     def num_users(self) -> int:

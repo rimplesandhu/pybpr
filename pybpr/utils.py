@@ -213,11 +213,11 @@ def load_movielens_data(data_dir, flag='ml-100k'):
     names = ['user_id', 'item_id', 'rating', 'timestamp']
     if flag == 'ml-100k':
         file_path = os.path.join(data_dir, flag, 'u.data')
-        df = pd.read_csv(file_path, sep='\t', names=names)
+        df = pd.read_csv(file_path, sep='\t')
         return df
     elif flag == 'ml-1m':
         file_path = os.path.join(data_dir, flag, 'ratings.dat')
-        df = pd.read_csv(file_path, sep='::', names=names, engine='python')
+        df = pd.read_csv(file_path, sep='\t', engine='python')
         return df
     elif flag == 'ml-10M100K':
         file_path = os.path.join(data_dir, flag, 'ratings.dat')

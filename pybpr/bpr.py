@@ -41,6 +41,8 @@ class BPR:
     imat_shm = None  # shared memory object for saving item mat
     num_users = None
     num_items = None
+
+    metric_tracker = None
     # iter_users = None  # user indices to iterate over
 
     def initiate(
@@ -67,6 +69,7 @@ class BPR:
             size=(self.num_items, self.num_features)
         )
         self._create_shm(umat=umat, imat=imat)
+        self.metric_tracker = []
 
     def _check_dims(self):
         """check validatity of num_users, num_items and batch_size"""
@@ -158,18 +161,112 @@ class BPR:
         """"Compute the metric"""
         # get the index of top --user_count-- users
         # print('Computing BPR metric v1..', end="", flush=True)
+        ucount = np.unique(uimat.tocoo().row).size
+        ucount = min(int(perc_active_users*self.num_users), ucount)
         selected_users = get_indices_sorted_by_activity(
             uimat=uimat,
             axis=1,
-            count=int(perc_active_users*self.num_users)
+            count=ucount
         )
-        selected_items = get_indices_sorted_by_activity(
+        # print(ucount, selected_users.shape)
+
+        # icount = np.unique(uimat.tocoo().col).size
+        # icount = min(int(perc_active_users*self.num_items), icount)
+        # selected_items = get_indices_sorted_by_activity(
+        #     uimat=uimat,
+        #     axis=0,
+        #     count=icount
+        # )
+        # print(icount, selected_items.shape)
+        # imat_sliced = self.imat.take(selected_items, axis=0)
+
+        rng = np.random.default_rng(seed)
+        rng.shuffle(selected_users)  # shufle the user list
+        num_splits = int(len(selected_users)/max_users_per_batch)+1
+        user_looper = tqdm(
+            iterable=np.array_split(selected_users, num_splits),
+            total=num_splits,
+            position=0,
+            leave=True,
+            file=sys.stdout,
+            desc='BPR-Score'
+        )
+        out_perc = np.zeros(shape=(len(percentiles),))
+        # print(out_perc)
+        for _, sel_users in enumerate(user_looper):
+            umat_sliced = self.umat.take(sel_users, axis=0)
+            # print('umat sliced', umat_sliced.shape)
+            rec_mat = umat_sliced.dot(self.imat.T)
+            # print('rec_mat', rec_mat.shape)
+            # get indices of top rec_count recomendations
+            # argpartition does not care about the order but gets top n right
+            # argpartition faster than argsort if we dont care about order in top n
+            # num_recs = min(num_recs, len(selected_items))
+            top_rec_inds = np.argpartition(
+                a=-1*rec_mat,  # the recomendation matrix, -1 to counter ascending sort
+                kth=num_recs-1,  # where to partition
+                axis=1  # sort it along the column, i.e. for each user
+            )
+            # print('top_rec_inds, before', top_rec_inds.shape)
+            top_rec_inds = top_rec_inds[:, :num_recs]
+            # print('top rec inds, after', top_rec_inds.shape)
+            # top_rec_inds = selected_items.take(top_rec_inds)
+            # print('top rec inds, after2', top_rec_inds.shape)
+
+            # create a dummy user-item matrix with the recs obtained above
+            dummy_rec_mat = csr_matrix(
+                (np.repeat(True, len(sel_users)*num_recs),
+                 (np.repeat(sel_users, num_recs), np.ravel(top_rec_inds, order='C'))),
+                dtype=bool,  # uimat.dtype,
+                shape=(self.num_users, self.num_items)
+            )
+            # print('dummy rec', dummy_rec_mat.shape)
+
+            newmat = (uimat > 0.01).astype(bool)
+            # for each selected user, compute the recs present in either
+            # the rec matrix or in ui matrix, not both
+            nonoverlap_count = np.asarray((dummy_rec_mat-newmat).sum(axis=1))
+            nonoverlap_count = nonoverlap_count.reshape(-1).take(sel_users)
+
+            # For each selected user, compute the # of interactions present
+            interaction_count = np.asarray(newmat.sum(axis=1))
+            interaction_count = interaction_count.reshape(-1).take(sel_users)
+            # print(interaction_count)
+
+            # this gets us the perc of recs found in
+            overlap_ratio = np.divide(
+                interaction_count + num_recs - nonoverlap_count,
+                2*np.minimum(interaction_count, num_recs),
+
+            )
+            # print(overlap_ratio)
+            out_perc += np.quantile(overlap_ratio, percentiles)
+        out_val = out_perc/num_splits
+        self.metric_tracker.append(out_val)
+        return out_val
+
+    def get_metric_v2(
+        self,
+        uimat: spmatrix,  # user-item matrix
+        perc_active_users: float,  # consider only top -- percentage of users
+        perc_active_items: float,  # consider only top -- percentage of users
+        num_recs: int,  # number of recomendations
+        max_users_per_batch: int = 100,
+        percentiles: list[int] = [0.25, 0.5, 0.75],
+        seed: int = 12345
+
+    ):
+        """"Compute the metric"""
+        # get the index of top --user_count-- users
+        # print('Computing BPR metric v1..', end="", flush=True)
+        ucount = np.unique(uimat.tocoo().row).size
+        ucount = min(int(perc_active_users*self.num_users), ucount)
+        selected_users = get_indices_sorted_by_activity(
             uimat=uimat,
-            axis=0,
-            count=int(perc_active_items*self.num_items)
+            axis=1,
+            count=ucount
         )
 
-        imat_sliced = self.imat.take(selected_items, axis=0)
         rng = np.random.default_rng(seed)
         rng.shuffle(selected_users)  # shufle the user list
         num_splits = int(len(selected_users)/max_users_per_batch)+1
@@ -184,19 +281,19 @@ class BPR:
         out_perc = np.zeros(shape=(len(percentiles),))
         for _, sel_users in enumerate(user_looper):
             umat_sliced = self.umat.take(sel_users, axis=0)
-            rec_mat = umat_sliced.dot(imat_sliced.T)
+            rec_mat = umat_sliced.dot(self.imat.T)
 
             # get indices of top rec_count recomendations
             # argpartition does not care about the order but gets top n right
             # argpartition faster than argsort if we dont care about order in top n
-            num_recs = min(num_recs, len(selected_items))
+            # num_recs = min(num_recs, len(selected_items))
             top_rec_inds = np.argpartition(
                 a=-1*rec_mat,  # the recomendation matrix, -1 to counter ascending sort
                 kth=num_recs-1,  # where to partition
                 axis=1  # sort it along the column, i.e. for each user
             )
             top_rec_inds = top_rec_inds[:, :num_recs]
-            top_rec_inds = selected_items.take(top_rec_inds)
+            # top_rec_inds = selected_items.take(top_rec_inds)
 
             # create a dummy user-item matrix with the recs obtained above
             dummy_rec_mat = csr_matrix(
@@ -222,7 +319,9 @@ class BPR:
 
             )
             out_perc += np.quantile(overlap_ratio, percentiles)
-        return out_perc/num_splits
+        out_val = out_perc/num_splits
+        self.metric_tracker.append(out_val)
+        return out_val
 
     def release_shm(self):
         """Release shared memory"""
@@ -271,6 +370,9 @@ def bpr_update(
     # sigmoid_new = np.exp(-r_uij) / (1.0 + np.exp(-r_uij))
     sigmoid_tiled = np.tile(sigmoid, (bpr_obj.num_features,))
     grad_u = np.multiply(sigmoid_tiled, (item_j - item_i))
+    # grad_u *= scale(vision_embed)
+    # grad_u *= scale(text_embed)
+    # grad_u *= time_scaling
     grad_u += bpr_obj.reg_lambda * user_u
     grad_i = np.multiply(sigmoid_tiled, -user_u) + \
         bpr_obj.reg_lambda * item_i
@@ -279,6 +381,7 @@ def bpr_update(
     bpr_obj.umat[this_user] -= bpr_obj.learning_rate * grad_u
     bpr_obj.imat[item_ith] -= bpr_obj.learning_rate * grad_i
     bpr_obj.imat[item_jth] -= bpr_obj.learning_rate * grad_j
+    # learning rate combination of weights from pos and neg int
 
 
 def bpr_fit(bpr_obj, neg_sampler, ncores):

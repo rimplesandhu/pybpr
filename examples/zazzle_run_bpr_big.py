@@ -24,13 +24,16 @@ df_c_not_o = pd.read_parquet(os.path.join(
 
 
 # define useritem objects
-num_users = df_v.user_id.nunique()
-num_items = df_v.product_id.nunique()
+user_colname = 'user_member_idx'
+item_colname = 'product_idx'
+num_users = df_v[user_colname].nunique()
+num_items = df_v[item_colname].nunique()
+
 
 test_ratio = 0.0
 data_viewed_not_clicked = UserItemInteractions(
-    users_index=df_v_not_c['user_idx'],
-    items_index=df_v_not_c['product_idx'],
+    users_index=df_v_not_c[user_colname],
+    items_index=df_v_not_c[item_colname],
     num_users=num_users,
     num_items=num_items
 )
@@ -38,8 +41,8 @@ data_viewed_not_clicked.generate_train_test(user_test_ratio=test_ratio)
 
 # clicked
 data_clicked = UserItemInteractions(
-    users_index=df_c['user_idx'],
-    items_index=df_c['product_idx'],
+    users_index=df_c[user_colname],
+    items_index=df_c[item_colname],
     num_users=num_users,
     num_items=num_items
 )
@@ -47,8 +50,8 @@ data_clicked.generate_train_test(user_test_ratio=test_ratio)
 
 # clicked not ordered
 data_clicked_not_ordered = UserItemInteractions(
-    users_index=df_c_not_o['user_idx'],
-    items_index=df_c_not_o['product_idx'],
+    users_index=df_c_not_o[user_colname],
+    items_index=df_c_not_o[item_colname],
     num_users=num_users,
     num_items=num_items
 )
@@ -56,8 +59,8 @@ data_clicked_not_ordered.generate_train_test(user_test_ratio=test_ratio)
 
 # ordered
 data_ordered = UserItemInteractions(
-    users_index=df_o['user_idx'],
-    items_index=df_o['product_idx'],
+    users_index=df_o[user_colname],
+    items_index=df_o[item_colname],
     num_users=num_users,
     num_items=num_items
 )
@@ -66,7 +69,7 @@ data_ordered.generate_train_test(user_test_ratio=test_ratio)
 
 # BPR
 mybpr = BPR(
-    num_features=200,
+    num_features=500,
     reg_lambda=0.0,
     num_iters=500,
     learning_rate=0.1,
@@ -77,13 +80,15 @@ mybpr.initiate(num_users=num_users, num_items=num_items)
 
 
 # training
-pos_data = data_clicked
+pos_data = data_ordered
 neg_data = data_clicked_not_ordered
 metric_log_train = []
 # neg_sampler = partial(
 #     uniform_negative_sampler,
 #     uimat=training_data
 # )
+
+
 neg_sampler = partial(
     explicit_negative_sampler,
     pos_uimat=pos_data.mat,
@@ -98,10 +103,10 @@ for _ in range(10):
     )
     mfunc = partial(
         mybpr.get_metric_v1,
-        perc_active_users=0.5,
-        perc_active_items=0.5,
+        perc_active_users=0.1,
+        perc_active_items=0.1,
         num_recs=60,
-        max_users_per_batch=160,
+        max_users_per_batch=2000,
         percentiles=[0.25, 0.5, 0.75],
         seed=1234
     )
@@ -113,5 +118,6 @@ metric_log_train = np.asarray(metric_log_train)
 
 # Save output
 OUT_DIR = '/projects/zazzle/rsandhu/pybpr/examples/output'
-np.savetxt(os.path.join(OUT_DIR, 'score_log.txt'), metric_log_train)
+np.savetxt(os.path.join(OUT_DIR, 'score_log1.txt'), metric_log_train)
 mybpr.save_model(dir_name=OUT_DIR)
+mybpr.release_shm()
