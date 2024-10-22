@@ -60,7 +60,7 @@ pyzmq @ file:///home/conda/feedstock_root/build_artifacts/pyzmq_1701783162207/wo
 requests @ file:///home/conda/feedstock_root/build_artifacts/requests_1684774241324/work
 scikit-learn @ file:///home/conda/feedstock_root/build_artifacts/scikit-learn_1701931988493/work
 SciPy @ file:///home/conda/feedstock_root/build_artifacts/scipy-split_1700812483254/work/dist/scipy-1.11.4-cp312-cp312-linux_x86_64.whl#sha256=4a38826a640d20e98d8709f58ee44b7261c2094720d230a515f23c9212bed074
-setuptools==69.0.3
+setuptools==70.0.0
 sip @ file:///home/conda/feedstock_root/build_artifacts/sip_1697300425834/work
 six @ file:///home/conda/feedstock_root/build_artifacts/six_1620240208055/work
 stack-data @ file:///home/conda/feedstock_root/build_artifacts/stack_data_1669632077133/work
