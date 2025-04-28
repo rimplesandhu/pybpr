@@ -26,6 +26,8 @@ class HybridMF(nn.Module):
         """Initialize hybrid matrix factorization model."""
         super().__init__()
         self.n_latent = n_latent
+        self.n_user_features = n_user_features
+        self.n_item_features = n_item_features
 
         # Define embeddings for users and items
         self.user_latent = nn.Embedding(
@@ -71,7 +73,7 @@ class HybridMF(nn.Module):
         if self.use_user_bias:
             nn.init.zeros_(self.user_biases.weight.data)
 
-    def predict_score(
+    def forward(
             self,
             user_features: torch.Tensor,
             item_features: torch.Tensor
@@ -95,16 +97,53 @@ class HybridMF(nn.Module):
 
         return prediction
 
-    def get_top_k_recommendations(
-            self,
-            user_features: torch.Tensor,
-            item_features: torch.Tensor,
-            k: int = 10
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Get top-k item recommendations for given users."""
-        scores = self.predict_score(user_features, item_features)
+    def get_top_k_item_features(
+        self,
+        user_feature_idx: int,
+        k: int = 10
+    ) -> Tuple[list, list]:
+        """Get top-k item features for a given user.
+
+        Args:
+            user_idx: Index of the user feature
+            k: Number of top item features to return
+
+        Returns:
+            Tuple of (top scores as list, top indices as list)
+        """
+        # Get user latent vector and compute similarity scores
+        user_latent = self.user_latent.weight[user_feature_idx].unsqueeze(0)
+        scores = torch.matmul(user_latent, self.item_latent.weight.T).squeeze()
+
+        # Add biases
+        scores += self.item_biases.weight.squeeze()
+
+        if self.use_global_bias:
+            scores += self.global_bias
+
+        if self.use_user_bias:
+            scores += self.user_biases.weight[user_feature_idx]
+
+        # Get top-k scores and indices
+        k = min(k, self.n_item_features)
         top_scores, top_indices = torch.topk(scores, k=k)
-        return top_scores, top_indices
+
+        # Convert tensors to lists
+        top_scores_list = top_scores.detach().cpu().tolist()
+        top_indices_list = top_indices.detach().cpu().tolist()
+
+        return top_scores_list, top_indices_list
+
+    # def get_top_k_recommendations(
+    #         self,
+    #         user_features: torch.Tensor,
+    #         item_features: torch.Tensor,
+    #         k: int = 10
+    # ) -> Tuple[torch.Tensor, torch.Tensor]:
+    #     """Get top-k item recommendations for given users."""
+    #     scores = self.forward(user_features, item_features)
+    #     top_scores, top_indices = torch.topk(scores, k=k)
+    #     return top_scores, top_indices
 
     # def forward(
     #         self,

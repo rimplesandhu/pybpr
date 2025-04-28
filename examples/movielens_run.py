@@ -1,6 +1,6 @@
 import os
 from pybpr import RecSys, UserItemData, HybridMF
-from pybpr import bpr_loss, bpr_loss_v2, hinge_loss
+from pybpr import bpr_loss, hinge_loss, bpr_loss_v2
 import torch
 import pandas as pd
 import numpy as np
@@ -10,9 +10,8 @@ import itertools
 
 
 def build_recsys(
-    pdf,
-    ndf,
-    idf,
+    rdf,
+    tdf,
     run,
     neg_option,
     item_option,
@@ -20,12 +19,12 @@ def build_recsys(
     learning_rate,
     loss_function,
     weight_decay,
-    n_iter=10,
+    n_iter=500,
     batch_size=1000,
-    eval_every=10,
-    save_every=10,
-    eval_user_size=20000,
-    output_dir="/kfs2/projects/zazzle/pybpr/examples/output/zazzle/",
+    eval_every=5,
+    save_every=5,
+    eval_user_size=70000,
+    output_dir="/kfs2/projects/zazzle/pybpr/examples/output/movielens3/",
 ):
     """Build and train a recommendation system. """
 
@@ -36,33 +35,37 @@ def build_recsys(
     name += f'_wd{int(weight_decay*1000)}'
     print(f"Starting process: {name}", flush=True)
 
-    print(f"Starting process: {name}")
+    # build data object
     ui = UserItemData(name=name)
-
-    # Add positive interactions (ratings >= 4.0)
     ui.add_positive_interactions(
-        user_ids=pdf.user_id,
-        item_ids=pdf.product_id
+        user_ids=rdf.UserID[rdf.Rating >= 4.0],
+        item_ids=rdf.MovieID[rdf.Rating >= 4.0]
     )
     if neg_option != 'neg-ignore':
         ui.add_negative_interactions(
-            user_ids=ndf.user_id,
-            item_ids=ndf.product_id
+            user_ids=rdf.UserID[rdf.Rating < 4.0],
+            item_ids=rdf.MovieID[rdf.Rating < 4.0]
         )
     ui.add_user_features(
-        user_ids=ui.user_ids_in_interactions,
-        feature_ids=ui.user_ids_in_interactions
+        user_ids=rdf.UserID.unique(),
+        feature_ids=rdf.UserID.unique()
     )
-    idf = idf[idf.product_id.isin(ui.item_ids_in_interactions)]
     if item_option == 'metadata':
         ui.add_item_features(
-            item_ids=idf.product_id,
-            feature_ids=idf.final_department_id
+            item_ids=tdf.MovieID,
+            feature_ids=tdf.TagID
         )
     elif item_option == 'indicator':
         ui.add_item_features(
-            item_ids=ui.item_ids_in_interactions,
-            feature_ids=ui.item_ids_in_interactions
+            item_ids=tdf.MovieID.unique(),
+            feature_ids=tdf.MovieID.unique()
+        )
+    elif item_option == 'both':
+        ui.add_item_features(
+            item_ids=np.concatenate(
+                (tdf.MovieID.values, tdf.MovieID.unique())),
+            feature_ids=np.concatenate(
+                (tdf.TagID.values, tdf.TagID.max() + tdf.MovieID.unique()))
         )
     else:
         raise ValueError(f"Unknown item_features type: {item_option}")
@@ -73,6 +76,7 @@ def build_recsys(
         train_ratio_neg=0.0 if neg_option == 'neg-test' else 0.8,
         show_progress=False
     )
+    print(ui, flush=True)
 
     # recomender
     recommender = RecSys(
@@ -86,8 +90,7 @@ def build_recsys(
         output_dir=os.path.join(output_dir, ui.name),
         log_level=1
     )
-
-    # print(f"[{name}] {recommender}")
+    # print(f"[{name}] {recommender}", flush=True)
 
     # Train the model
     recommender.fit(
@@ -100,14 +103,15 @@ def build_recsys(
         explicit_ns_for_test=False if neg_option == 'neg-ignore' else True,
         disable_progress_bar=True
     )
+
     print(f"Finished process: {name}")
     return recommender
 
 
-def run_experiment(params, pdf, ndf, idf):
+def run_experiment(params, rdf, tdf):
     """Run a single experiment with the given parameters.  """
     try:
-        recommender = build_recsys(pdf, ndf, idf, **params)
+        recommender = build_recsys(rdf, tdf, **params)
         return f"Successfully completed: {recommender.data.name}"
     except Exception as e:
         return f"Failed: {str(e)}"
@@ -118,47 +122,46 @@ if __name__ == '__main__':
     torch.set_num_threads(1)  # Limit threads per process
 
     # Load raw data
-    data_dir = '/kfs2/projects/zazzle/raw_data/NREL'
+    data_dir = '/home/rsandhu/zazzle/raw_data'
+    ratings_path = os.path.join(data_dir, 'ml-10M100K', 'ratings.dat')
+    tags_path = os.path.join(data_dir, 'tag-genome', 'tag_relevance.dat')
 
-    # viewed
-    files = [os.path.join(
-        data_dir, f'Clicks_{str(ix).zfill(4)}_part_00.parquet') for ix in range(80)]
-    df_viewed = pd.concat(
-        [pd.read_parquet(ifile, engine='fastparquet') for ifile in files])
+    # Read ratings data
+    rdf = pd.read_csv(
+        ratings_path,
+        sep='::',
+        engine='python',
+        header=None
+    )
+    rdf.columns = ['UserID', 'MovieID', 'Rating', 'Timestamp']
 
-    # ordered
-    files = [os.path.join(
-        data_dir, f'OrderItems_{str(ix).zfill(4)}_part_00.parquet') for ix in range(80)]
-    df_ordered = pd.concat([pd.read_parquet(ifile) for ifile in files])
-
-    # item info
-    files = [os.path.join(
-        data_dir, f'Products_{str(ix).zfill(4)}_part_00.parquet') for ix in range(80)]
-    df_item_info = pd.concat([pd.read_parquet(ifile) for ifile in files])
-
-    # manage
-    df_clicked_not_ordered = df_viewed[df_viewed['is_click']].copy()
-    df_viewed_not_clicked = df_viewed[~df_viewed['is_click']].copy()
-    df_clicked = pd.concat([df_ordered, df_clicked_not_ordered])
-
-    # prune
-    df_list = [df_viewed, df_clicked, df_ordered,
-               df_viewed_not_clicked, df_clicked_not_ordered]
-    for idf in df_list:
-        idf.drop_duplicates(
-            subset=['user_id', 'product_id'], keep='last', inplace=True)
+    # Read tag data
+    tdf = pd.read_csv(tags_path, sep='\t', header=None)
+    tdf.columns = ['MovieID', 'TagID', 'Relevance']
+    tdf.drop(index=tdf.index[tdf.Relevance < 0.8], inplace=True)
 
     # Define parameter grid - without rdf and tdf
     param_grid = {
-        'run': list(range(1)),
-        'item_option': ['metadata', 'indicator'],
+        'run': list(range(5)),
+        'item_option': ['metadata', 'indicator', 'both'],
         'n_latent': [32, 64, 128],
-        'learning_rate': [0.01, 0.05],
-        'loss_function': [bpr_loss],
+        'learning_rate': [0.005, 0.01, 0.05],
+        'loss_function': [bpr_loss, bpr_loss_v2, hinge_loss],
         'weight_decay': [0],
         'neg_option': ['neg-ignore', 'neg-test', 'neg-both'],
         # Add any other parameters you want to vary
     }
+
+    # param_grid = {
+    #     'run': list(range(1)),
+    #     'item_option': ['metadata', 'indicator', 'both'],
+    #     'n_latent': [64],
+    #     'learning_rate': [0.005, 0.01],
+    #     'loss_function': [bpr_loss, bpr_loss_v2],
+    #     'weight_decay': [0],
+    #     'neg_option': ['neg-ignore', 'neg-test', 'neg-both'],
+    #     # Add any other parameters you want to vary
+    # }
 
     # Generate all parameter combinations
     all_params = []
@@ -172,13 +175,7 @@ if __name__ == '__main__':
     print(f"Running {len(all_params)} experiments")
 
     # Create a partial function with fixed rdf and tdf
-    run_with_fixed_data = partial(
-        run_experiment,
-        pdf=df_ordered,
-        ndf=df_clicked_not_ordered,
-        idf=df_item_info,
-        output_dir="/kfs2/projects/zazzle/pybpr/examples/output/zazzle-order-click/",
-    )
+    run_with_fixed_data = partial(run_experiment, rdf=rdf, tdf=tdf)
 
     # Set the number of processes to use
     num_processes = min(len(all_params), mp.cpu_count())

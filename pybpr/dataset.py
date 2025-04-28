@@ -44,22 +44,21 @@ class UserItemData:
 
     def __repr__(self) -> str:
         """Return string representation of the dataset."""
-        n_total = self.Rpos.nnz + self.Rneg.nnz
-        pos_perc = (np.round(self.Rpos.nnz * 100 / n_total, 1)
-                    if n_total > 0 else 0)
-        return (
+        istr = (
             f"{self.__class__.__name__}({self.name})\n"
-            # f"n_users={self.n_users:,}, "
-            # f"n_items={self.n_items:,},\n"
             f"  {'Fuser':10}:{print_sparse_matrix_stats(self.Fu)}\n"
             f"  {'Fitem':10}:{print_sparse_matrix_stats(self.Fi)}\n"
             f"  {'Rpos':10}:{print_sparse_matrix_stats(self.Rpos)}\n"
-            f"  {'Rpos_train':10}:{print_sparse_matrix_stats(self.Rpos_train)}\n"
-            f"  {'Rpos_test':10}:{print_sparse_matrix_stats(self.Rpos_test)}\n"
             f"  {'Rneg':10}:{print_sparse_matrix_stats(self.Rneg)}\n"
-            f"  {'Rneg_train':10}:{print_sparse_matrix_stats(self.Rneg_train)}\n"
-            f"  {'Rneg_test':10}:{print_sparse_matrix_stats(self.Rneg_test)}"
         )
+        if self.Rpos_train is not None:
+            istr += (
+                f"  {'Rpos_train':10}:{print_sparse_matrix_stats(self.Rpos_train)}\n"
+                f"  {'Rpos_test':10}:{print_sparse_matrix_stats(self.Rpos_test)}\n"
+                f"  {'Rneg_train':10}:{print_sparse_matrix_stats(self.Rneg_train)}\n"
+                f"  {'Rneg_test':10}:{print_sparse_matrix_stats(self.Rneg_test)}"
+            )
+        return istr
 
     def _get_index(
         self,
@@ -191,7 +190,6 @@ class UserItemData:
 
         # Process weights and create matrix
         values = self._process_weights(weights, len(user_indices))
-
         interaction_matrix = sp.coo_matrix(
             (values, (user_indices, item_indices)),
             shape=(self.n_users, self.n_items),
@@ -329,8 +327,8 @@ class UserItemData:
 
     def train_test_split(
         self,
-        train_ratio_pos: float = 0.2,
-        train_ratio_neg: float = 1.,
+        train_ratio_pos: float,
+        train_ratio_neg: float,
         random_state: Optional[int] = None,
         show_progress: bool = True
     ) -> None:
@@ -351,6 +349,16 @@ class UserItemData:
             random_state,
             show_progress
         )
+
+    @property
+    def user_ids_in_interactions(self) -> List:
+        """Give all user ids"""
+        return list(self._id_to_idx_mappings['user'][0].keys())
+
+    @property
+    def item_ids_in_interactions(self) -> List:
+        """Give all user ids"""
+        return list(self._id_to_idx_mappings['item'][0].keys())
 
     @property
     def Rpos(self) -> sp.coo_matrix:

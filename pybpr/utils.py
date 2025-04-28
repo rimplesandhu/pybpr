@@ -4,6 +4,7 @@
 Utility functions for data preprocessing and categorical data handling.
 """
 
+import os
 from typing import List, Union, Optional
 import scipy.sparse as sp
 from typing import Tuple, Optional, Union, List, Sequence
@@ -12,13 +13,177 @@ import numpy as np
 from typing import Tuple
 import pandas as pd
 import torch
-from scipy.sparse import sparray
+from scipy.sparse import csr_matrix
 from tqdm import tqdm
+import json
+
+from typing import List, Tuple, Optional, Union
+from scipy.sparse import csr_matrix, lil_matrix
+import numpy as np
+from numpy.random import RandomState
+
+
+def sample_pos_neg_pairs(
+    pos_csr_mat: csr_matrix,
+    neg_csr_mat: csr_matrix,
+    user_indices: Optional[List[int]] = None,
+    explicit_only: bool = False,
+    random_state: Optional[Union[int, RandomState]] = None
+) -> Tuple[List[int], List[int], List[int]]:
+    """
+    Sample positive-negative item pairs for users.
+
+    Args:
+        pos_csr_mat: Positive user-item interactions sparse matrix.
+        neg_csr_mat: Negative user-item interactions sparse matrix.
+        user_indices: User indices to process (all users if None).
+        explicit_only: Only sample from explicit negative matrix if True.
+        random_state: Random seed or RandomState object.
+
+    Returns:
+        Tuple of (valid_user_indices, pos_item_indices, neg_item_indices).
+
+    Raises:
+        ValueError: If matrices are empty or shapes don't match.
+        IndexError: If user_indices contains out-of-bounds indices.
+    """
+    # Input validation
+    if pos_csr_mat.nnz == 0:
+        raise ValueError("Positive matrix is empty")
+
+    if pos_csr_mat.shape != neg_csr_mat.shape:
+        raise ValueError(f"Shape mismatch: {pos_csr_mat.shape} vs "
+                         f"{neg_csr_mat.shape}")
+
+    # Initialize random state for reproducibility
+    rng = (RandomState(random_state) if not isinstance(random_state, RandomState)
+           else random_state)
+
+    # Process user indices with validation
+    n_users = pos_csr_mat.shape[0]
+    if user_indices is None:
+        user_indices = list(range(n_users))
+    else:
+        # Validate user indices are within bounds
+        invalid_indices = [
+            idx for idx in user_indices if idx < 0 or idx >= n_users]
+        if invalid_indices:
+            raise IndexError(f"User indices out of bounds: {invalid_indices}")
+
+    # Convert to LIL format for efficient row access
+    pos_lil_mat = pos_csr_mat.tolil()
+    neg_lil_mat = neg_csr_mat.tolil()
+
+    # Initialize result arrays
+    valid_user_indices = []
+    pos_item_indices = []
+    neg_item_indices = []
+
+    # Total number of items
+    n_items = pos_csr_mat.shape[1]
+    item_range = range(n_items)
+
+    # Process users
+    for user_idx in user_indices:
+        pos_items = pos_lil_mat.rows[user_idx]
+
+        if len(pos_items) == 0:
+            continue
+
+        # Sample positive item
+        pos_idx = pos_items[rng.randint(0, len(pos_items))]
+
+        # Try to sample from explicit negatives first
+        neg_items = neg_lil_mat.rows[user_idx]
+        if len(neg_items) > 0:
+            neg_idx = neg_items[rng.randint(0, len(neg_items))]
+        elif not explicit_only:
+            # Sample from implicit negatives (items not in positive set)
+            non_pos_items = [i for i in item_range if i not in pos_items]
+            neg_idx = non_pos_items[rng.randint(0, len(non_pos_items))]
+        else:
+            continue  # Skip if no negatives and explicit_only is True
+
+        valid_user_indices.append(user_idx)
+        pos_item_indices.append(pos_idx)
+        neg_item_indices.append(neg_idx)
+
+    return valid_user_indices, pos_item_indices, neg_item_indices
+
+
+def sample_pos_neg_pairs_old(
+    pos_csr_mat: csr_matrix,
+    neg_csr_mat: csr_matrix,
+    user_indices: Optional[List[int]] = None,
+    explicit_only: bool = False
+) -> tuple[list[int], list[int], list[int]]:
+    """Sample one random non-zero entry from each row using LIL format"""
+    # Convert to LIL format for efficient row access
+    assert pos_csr_mat.shape == neg_csr_mat.shape, 'Shape mismatch'
+    pos_lil_mat = pos_csr_mat.tolil()
+    neg_lil_mat = neg_csr_mat.tolil()
+    set_of_all_items = set(range(pos_csr_mat.shape[1]))
+
+    # Initialize result lists
+    user_indices = user_indices if user_indices is not None else list(
+        range(pos_lil_mat.shape[0]))
+    valid_user_indices: List[int] = []
+    pos_item_indices: List[int] = []
+    neg_item_indices: List[int] = []
+
+    # Iterate through each row
+    for user_idx in user_indices:
+        plst = pos_lil_mat.rows[user_idx]
+        nlst = neg_lil_mat.rows[user_idx]
+        neg_idx = None
+        if len(plst) > 0:
+            pos_idx = np.random.choice(plst)
+            if len(nlst) > 0:
+                neg_idx = np.random.choice(nlst)
+            else:
+                if not explicit_only:
+                    non_pos_items = list(set_of_all_items - set(plst))
+                    neg_idx = np.random.choice(non_pos_items)
+            if neg_idx is not None:
+                valid_user_indices.append(user_idx)
+                pos_item_indices.append(pos_idx)
+                neg_item_indices.append(neg_idx)
+
+    return valid_user_indices, pos_item_indices, neg_item_indices
+
+
+def load_json_file(filepath):
+    """
+    Loads and parses a JSON file from the given filepath
+
+    Args:
+        filepath (str): Path to the JSON file
+
+    Returns:
+        dict: Parsed JSON data as a Python dictionary
+
+    Raises:
+        FileNotFoundError: If the file doesn't exist
+        json.JSONDecodeError: If the file isn't valid JSON
+    """
+    try:
+        with open(filepath, 'r', encoding='utf-8') as file:
+            data = json.load(file)
+        return data
+    except FileNotFoundError:
+        print(f"Error: File '{filepath}' not found")
+        raise
+    except json.JSONDecodeError as e:
+        print(f"Error: Invalid JSON format in '{filepath}': {e}")
+        raise
+    except Exception as e:
+        print(f"Unexpected error loading '{filepath}': {e}")
+        raise
 
 
 def split_sparse_coo_matrix(
     matrix: sparse.coo_matrix,
-    train_ratio: float = 0.8,
+    train_ratio: float,
     random_state: Optional[Union[int, np.random.RandomState]] = None,
     show_progress: bool = False,
 ) -> Tuple[sparse.coo_matrix, sparse.coo_matrix]:
@@ -42,8 +207,17 @@ def split_sparse_coo_matrix(
     if not isinstance(matrix, sparse.coo_matrix):
         raise TypeError("Input matrix must be a scipy.sparse.coo_matrix")
 
-    if not 0 < train_ratio < 1:
-        raise ValueError("train_ratio must be between 0 and 1")
+    if not 0 <= train_ratio <= 1:
+        raise ValueError("train_ratio must be between 0 and 1 inclusive")
+
+    # Handle edge cases for train_ratio
+    if train_ratio == 0:
+        # All data goes to test set
+        return sparse.coo_matrix(matrix.shape), matrix
+
+    if train_ratio == 1:
+        # All data goes to training set
+        return matrix, sparse.coo_matrix(matrix.shape)
 
     # Set random state
     if isinstance(random_state, np.random.RandomState):
@@ -138,7 +312,7 @@ def get_sparse_matrix_stats(matrix: sparse.coo_matrix) -> dict:
     stats = {
         "shape": matrix.shape,
         "nnz": matrix.nnz,
-        "density": matrix.nnz / (matrix.shape[0] * matrix.shape[1]),
+        "density": matrix.nnz / max((matrix.shape[0] * matrix.shape[1]), 1),
         "empty_rows": matrix.shape[0]-len(np.unique(matrix.row)),
         "empty_cols": matrix.shape[1]-len(np.unique(matrix.col)),
     }
@@ -149,8 +323,8 @@ def print_sparse_matrix_stats(matrix: sparse.coo_matrix) -> None:
     """Prints compact stats about a sparse matrix in a single line."""
     stats = get_sparse_matrix_stats(matrix)
     print_str = (
-        f"({stats['shape'][0]:6}×{stats['shape'][1]:6}) nnz={stats['nnz']:10,}, "
-        f"density={stats['density']:5.1%}, "
+        f"({stats['shape'][0]:6}×{stats['shape'][1]:6}) nnz={stats['nnz']:10,} "
+        f"({stats['density']:5.3%}), "
         f"empty rows/cols={stats['empty_rows']:6}/{stats['empty_cols']:6}"
     )
     return print_str
@@ -168,7 +342,7 @@ def random_col_for_row(
 
     Returns:
         A random column index or numpy array of random column indices. For each row,
-        if it has non-zero elements, returns a random column where a non-zero 
+        if it has non-zero elements, returns a random column where a non-zero
         element exists. Otherwise, returns a random column from the entire matrix.
     """
     # --- Input validation and preprocessing ---
