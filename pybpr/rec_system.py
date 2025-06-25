@@ -20,11 +20,13 @@ import matplotlib.pyplot as plt
 import scipy.sparse as sp
 from sklearn.metrics import roc_auc_score
 import torch
+from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 
 from .dataset import UserItemData
 from .hybrid_mf import HybridMF
-from .utils import scipy_csr_to_torch_csr, random_col_for_row, sample_pos_neg_pairs
+# from .utils import sc sample_pos_neg_pairs
+from .utils import *
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -40,8 +42,7 @@ class RecSys:
         optimizer: torch.optim.Optimizer,
         loss_function: Callable,
         output_dir: str,
-        log_level: int = logging.INFO,
-        random_state: Optional[Union[int, np.random.RandomState]] = None,
+        log_level: int = logging.INFO
     ):
         """Initialize the recommendation system.
 
@@ -71,18 +72,12 @@ class RecSys:
         os.makedirs(output_dir, exist_ok=True)
         self.logger.info(f'Output directory set to: {output_dir}')
 
-        # Initialize random state
-        if isinstance(random_state, np.random.RandomState):
-            self.random_state = random_state
-        else:
-            self.random_state = np.random.RandomState(random_state)
-
         # user item data
         self.data: UserItemData = data
         self.data.validate_dataset()
 
         # model
-        self.model: torch.nn.Module = model
+        self.model: RecSys = model
         self.optimizer: torch.optim.Optimizer = optimizer(
             self.model.parameters())
         self.loss_function = loss_function
@@ -97,9 +92,22 @@ class RecSys:
         self.Fu_csr = self.data.Fu.tocsr()
         self.Fi_csr = self.data.Fi.tocsr()
 
-        # valid train users (only those that have atleast 1 pos/neg)
-        self.users_train = list(set(self.data.Rpos_train.row))
-        self.users_test = list(set(self.data.Rpos_test.row))
+        # valid users for train/test
+        users_train = np.unique(self.data.Rpos_train.row)
+        users_test = np.unique(self.data.Rpos_test.row)
+        self.users = np.intersect1d(users_train, users_test)
+
+        # if explicit_negative_sampling_only:
+        #     users_train_neg = np.unique(self.data.Rneg_train.row)
+        #     users_test_neg = np.unique(self.data.Rneg_test.row)
+        #     users_neg = np.intersect1d(users_train_neg, users_test_neg)
+        #     self.users = np.intersect1d(self.users, users_neg)
+        #     if len(self.users) == 0:
+        #         raise ValueError(
+        #             'No negative interactions found-> No valid users!\n'
+        #             'Try setting explicit_negative_sampling_only to False'
+        #         )
+        self.logger.info(f'Got {len(self.users)} users for train/test')
 
     def __repr__(self) -> str:
         """String representation of the RecSys object."""
@@ -127,112 +135,139 @@ class RecSys:
             self.logger.error(istr)
             raise ValueError(istr)
 
-    def get_model_predictions(
-            self,
-            batch_users,
-            Rpos_csr,
-            Rneg_csr,
-            explicit_only
-    ):
-        """get model predictions"""
-        users, pos_items, neg_items = sample_pos_neg_pairs(
-            pos_csr_mat=Rpos_csr,
-            neg_csr_mat=Rneg_csr,
-            user_indices=batch_users,
-            explicit_only=explicit_only
+    def _get_pos_neg_scores(self, users: List[int]):
+        """scores"""
+        users, pos_items, neg_items = sample_pos_neg_pairs(  # get pos/neg pairs
+            pos_csr_mat=self.Rpos_train_csr,
+            neg_csr_mat=self.Rneg_train_csr,
+            user_indices=users
         )
 
         # Prepare feature embedding matrices
-        Fu_sliced = scipy_csr_to_torch_csr(self.Fu_csr[users, :])
-        Fi_sliced_pos = scipy_csr_to_torch_csr(self.Fi_csr[pos_items, :])
-        Fi_sliced_neg = scipy_csr_to_torch_csr(self.Fi_csr[neg_items, :])
+        # Fu_sliced = scipy_csr_to_torch_csr(self.Fu_csr[users, :])
+        # Fi_sliced_pos = scipy_csr_to_torch_csr(self.Fi_csr[pos_items, :])
+        # Fi_sliced_neg = scipy_csr_to_torch_csr(self.Fi_csr[neg_items, :])
+        Fu_sliced = self.Fu_csr[users, :]
+        Fi_sliced_pos = self.Fi_csr[pos_items, :]
+        Fi_sliced_neg = self.Fi_csr[neg_items, :]
 
-        # get predict scores
-        r_ui = self.model(
-            user_features=Fu_sliced,
-            item_features=Fi_sliced_pos
-        )
-        r_uj = self.model(
-            user_features=Fu_sliced,
-            item_features=Fi_sliced_neg
-        )
+        # predict scores
+        r_ui = self.model(Fu_sliced, Fi_sliced_pos)
+        r_uj = self.model(Fu_sliced, Fi_sliced_neg)
         return r_ui, r_uj
 
-    def evaluate(
+    def _train(self, batch_users):
+        """train"""
+        self.model.train()  # start training
+        r_ui, r_uj = self._get_pos_neg_scores(batch_users)
+        mask = (r_ui != 0) & (r_uj != 0)  # remove predictions that are zeros
+        self.optimizer.zero_grad()
+        loss = self.loss_function(r_ui[mask], r_uj[mask])
+        loss.backward()
+        self.optimizer.step()
+        return loss.item(), len(r_ui[mask])
+
+    def compute_metrics(
         self,
-        max_users: int,
+        users: List[int],
         use_train: bool,
-        explicit_only
     ) -> Dict[str, float]:
         """Evaluate AUC score and loss for a set of users"""
 
         # Select appropriate datasets
         Rpos_csr = self.Rpos_train_csr if use_train else self.Rpos_test_csr
         Rneg_csr = self.Rneg_train_csr if use_train else self.Rneg_test_csr
-        user_set = self.users_train if use_train else self.users_test
 
-        # get random set of users
-        self.model.eval()
-        n_users = min(max_users, len(user_set))
-        user_set_rnd = self.random_state.choice(
-            a=user_set,
-            size=n_users,
-            replace=False
-        ).tolist()
-
-        # Process users in batches
+        # compute
         metrics = {}
         with torch.no_grad():
-            r_ui, r_uj = self.get_model_predictions(
-                user_set_rnd, Rpos_csr, Rneg_csr, explicit_only
+            # auc
+            user_interactions = get_user_interactions(
+                users=users,
+                pos_csr_mat=Rpos_csr,
+                neg_csr_mat=Rneg_csr,
+                neg_ratio=1.
             )
-            n_users = len(r_ui)
+            auc_scores = compute_auc_scores(
+                user_interactions=user_interactions,
+                predict_fn=self.predict
+            )
+            metrics['auc'] = np.nanmean(auc_scores).item()
+            metrics['auc_std'] = np.nanstd(auc_scores).item()
 
-            # metrics
-            true_labels = np.zeros(n_users+n_users)
-            true_labels[:n_users] = 1
-            pred_labels = np.concatenate((
-                r_ui.detach().cpu().numpy(),
-                r_uj.detach().cpu().numpy()
-            ))
-            metrics['loss'] = self.loss_function(r_ui, r_uj).mean().item()
-            metrics['auc'] = roc_auc_score(
-                y_true=true_labels,
-                y_score=pred_labels
-            ).item()
-
-            metrics['n_users_evaluated'] = n_users
+            # loss
+            r_ui, r_uj = self._get_pos_neg_scores(users)
+            mask = (r_ui != 0) & (r_uj != 0)
+            loss = self.loss_function(r_ui[mask], r_uj[mask])
+            metrics['loss'] = loss.item()/len(r_ui[mask])
 
         return metrics
+
+    def predict(self, users: List[int], items=List[int]):
+        """Predict score for seletected items and users"""
+        return self.model.predict(
+            user_features=self.Fu_csr[users, :],
+            item_features=self.Fi_csr[items, :]
+        ).detach().numpy()[0, :]
+
+    # def predict(self, users: List[int], items=List[int]):
+    #     """Predict score for seletected items and users"""
+    #     return self.model.predict(
+    #         user_features=scipy_csr_to_torch_csr(self.Fu_csr[users, :]),
+    #         item_features=scipy_csr_to_torch_csr(self.Fi_csr[items, :])
+    #     ).detach().numpy()[0, :]
+
+    # def predict(self, users: List[int], items=List[int]):
+    #     """Predict score for seletected items and users"""
+    #     return self.model.predict(
+    #         user_features=scipy_csr_to_torch_csr(self.Fu_csr[users, :]),
+    #         item_features=scipy_csr_to_torch_csr(self.Fi_csr[items, :])
+    #     ).detach().numpy()[0, :]
+
+    def evaluate(self, max_users: int):
+        """evaluate"""
+        self.model.eval()
+        with torch.no_grad():
+            # get users
+            users = np.random.choice(
+                self.users,
+                size=min(max_users, len(self.users)),
+                replace=False
+            ).tolist()
+
+            # test
+            metrics = self.compute_metrics(users, use_train=False)
+            metrics_dict = {f'test_{k}': v for k, v in metrics.items()}
+
+            # train
+            metrics = self.compute_metrics(users, use_train=True)
+            metrics_dict |= {f'train_{k}': v for k, v in metrics.items()}
+        self.model.train()
+        return metrics_dict
 
     def fit(
         self,
         n_iter: int,
         batch_size: int = 1000,
-        eval_every: int = None,
+        eval_every: int = 5,
         eval_user_size: int = 1000,
-        save_every: int = None,
-        explicit_ns_for_train: bool = False,
-        explicit_ns_for_test: bool = False,
-        disable_progress_bar: bool = False
+        early_stopping_patience: int = 10
     ) -> None:
         """Train the recommendation model using BPR optimization."""
 
-        # Adjust batch size if needed
-        n_users = len(self.users_train)
-        if batch_size >= n_users:
-            self.logger.warning(
-                f'Batch size({batch_size:,})>n_users({n_users:,})')
-            batch_size = n_users
-        n_mbatches = int(np.ceil(n_users / batch_size))
-        self.logger.info(f'Batch size = {batch_size:,}')
-        self.logger.info(f'# of minibatches = {n_mbatches:,}')
+        # prepare datatloader
+        dataloader = DataLoader(
+            TensorDataset(torch.LongTensor(self.users)),
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=2
+        )
+        self.logger.info(f'# of minibatches = {len(dataloader):,}')
+        self.logger.info(f'Eval frequency = {eval_every} epochs')
 
-        # Set up evaluation and save frequency
-        eval_frequency = eval_every if eval_every else max(1, n_iter // 10)
-        save_frequency = save_every if save_every else eval_frequency
-        self.logger.info(f'Eval frequency = {eval_frequency} epochs')
-        self.logger.info(f'Save frequency = {save_frequency} epochs')
+        # early stopping
+        best_test_auc = 0.0
+        patience_counter = 0
 
         # Set up progress tracking
         epoch0 = self.metrics[-1]['epoch'] if self.metrics else 0
@@ -241,75 +276,50 @@ class RecSys:
             total=n_iter,
             file=sys.stdout,
             desc='HybBPR',
-            disable=disable_progress_bar
         )
 
         # device = next(self.model.parameters()).device  # Get model device
         for k, epoch in enumerate(epoch_looper):
-            # get batched users
-            shuffled_users = self.users_train.copy()
-            self.random_state.shuffle(shuffled_users)
-            batches = np.array_split(shuffled_users, n_mbatches)
             epoch_loss = 0.0
             n_users_trained = 0
 
-            for batch_users in batches:
-                # Get sliced feature matrices
-                self.model.train()
-                self.optimizer.zero_grad()
-                r_ui, r_uj = self.get_model_predictions(
-                    batch_users=batch_users,
-                    Rpos_csr=self.Rpos_train_csr,
-                    Rneg_csr=self.Rneg_train_csr,
-                    explicit_only=explicit_ns_for_train
-                )
-                loss = self.loss_function(r_ui, r_uj)
-                loss.backward()
-                self.optimizer.step()
-                epoch_loss += loss.item() * len(r_ui)
-                n_users_trained += len(r_ui)
+            for batch in dataloader:
+                batch_users = batch[0].numpy()
+                loss, n_train_users = self._train(batch_users)
+                epoch_loss += loss * n_train_users
+                n_users_trained += n_train_users
 
             # Calculate average loss and track metrics
             avg_loss = epoch_loss / n_users_trained
+            epoch_looper.set_postfix({'loss': f'{avg_loss:.4f}'})
             metrics_dict = {'epoch': epoch, 'loss': avg_loss}
 
             # Evaluate on random subset of users if it's time
-            if epoch % eval_frequency == 0:
-                self.model.eval()
-                with torch.no_grad():
-                    test_metrics = self.evaluate(
-                        use_train=False,
-                        max_users=eval_user_size,
-                        explicit_only=explicit_ns_for_test
-                    )
-                    train_metrics = self.evaluate(
-                        use_train=True,
-                        max_users=eval_user_size,
-                        explicit_only=explicit_ns_for_train
-                    )
-                self.model.train()
+            if epoch % eval_every == 0:
+                metrics_dict = metrics_dict | self.evaluate(
+                    max_users=eval_user_size)
+                current_auc = metrics_dict.get('test_auc', 0)
+                if current_auc > best_test_auc:
+                    best_test_auc = current_auc
+                    patience_counter = 0
+                    self.save_model(filename=f"best_model_epoch_{epoch}.torch")
+                else:
+                    patience_counter += 1
 
-                for k, v in test_metrics.items():
-                    metrics_dict[f'test_{k}'] = v
+                # early stopping
+                if patience_counter >= early_stopping_patience:
+                    self.logger.info(f"Early stopping  at epoch {epoch}")
+                    break
 
-                for k, v in train_metrics.items():
-                    metrics_dict[f'train_{k}'] = v
-
-                self.logger.info(
-                    # f"Train AUC: {train_metrics.get('auc_mean', 0):.4f}, "
-                    f"Eval at epoch {epoch}: "
-                    f"Test AUC: {test_metrics.get('auc', 0):.4f}, "
-                    f"Test Loss: {test_metrics.get('loss', 0):.4f}"
+                # logging
+                self.logger.debug(
+                    f"Eval@{epoch}: "
+                    f"AUC (train/test): {metrics_dict.get('train_auc', 0):.3f}/"
+                    f"{metrics_dict.get('test_auc', 0):.3f}, "
+                    f"Loss (train/test): {metrics_dict.get('train_loss', 0):.3f}/"
+                    f"{metrics_dict.get('test_loss', 0):.3f}"
                 )
-
-            # Store metrics and update progress bar
             self.metrics.append(metrics_dict)
-            if epoch % save_frequency == 0 or k == n_iter:
-                self.save_metrics()
-                self.save_model()
-
-            # Update progress bar
-            epoch_looper.set_postfix({'loss': f'{avg_loss:.4f}'})
 
     def save_metrics(self, filename: str = "metrics.json") -> None:
         """Save training metrics to a JSON file."""

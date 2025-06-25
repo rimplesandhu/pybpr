@@ -5,22 +5,306 @@ Utility functions for data preprocessing and categorical data handling.
 """
 
 import os
-from typing import List, Union, Optional
+import math
+from typing import List, Union, Optional, Tuple
 import scipy.sparse as sp
-from typing import Tuple, Optional, Union, List, Sequence
 from scipy import sparse
 import numpy as np
-from typing import Tuple
 import pandas as pd
 import torch
-from scipy.sparse import csr_matrix
+from scipy.sparse import csr_matrix, lil_matrix
 from tqdm import tqdm
 import json
-
-from typing import List, Tuple, Optional, Union
-from scipy.sparse import csr_matrix, lil_matrix
-import numpy as np
 from numpy.random import RandomState
+from sklearn.metrics import roc_auc_score
+from joblib import Parallel, delayed, cpu_count
+
+
+def get_user_interactions(
+    users: List[int],
+    pos_csr_mat: csr_matrix,
+    neg_csr_mat: csr_matrix,
+    neg_ratio: float = 1.
+) -> list[tuple]:
+    """Collect positive and negative interactions for each user.
+
+    Args:
+        pos_csr_mat: Sparse matrix of positive interactions
+        neg_csr_mat: Sparse matrix of negative interactions
+        neg_ratio: Ratio to determine number of negative samples
+
+    Returns:
+        List of tuples (user_idx, pos_items, neg_items) for each user
+    """
+    assert neg_ratio > 0., 'Need neg_ratio>0'
+    n_users, n_items = pos_csr_mat.shape
+
+    # Pre-compute indices for efficient CSR access
+    pos_indptr = pos_csr_mat.indptr
+    pos_indices = pos_csr_mat.indices
+    neg_indptr = neg_csr_mat.indptr
+    neg_indices = neg_csr_mat.indices
+
+    user_interactions = []
+
+    for user_idx in users:
+        pos_start, pos_end = pos_indptr[user_idx], pos_indptr[user_idx + 1]
+        pos_items = pos_indices[pos_start:pos_end]
+
+        if len(pos_items) == 0:
+            continue
+
+        # Get or generate negative items
+        neg_start, neg_end = neg_indptr[user_idx], neg_indptr[user_idx + 1]
+        neg_items = neg_indices[neg_start:neg_end]
+
+        # Handle case with no negative items
+        if len(neg_items) == 0:
+            # get number of neg items
+            n_neg_items = int(neg_ratio * len(pos_items))
+            n_neg_items = min(n_neg_items, n_items - len(pos_items))
+            if n_neg_items <= 0:
+                continue
+
+            # get negative items
+            neg_items = np.empty(n_neg_items, dtype=np.int32)
+            pos_items_set = set(pos_items)
+            sampled = 0
+            while sampled < n_neg_items:
+                batch_size = min(n_neg_items - sampled, n_neg_items)
+                candidates = np.random.randint(0, n_items, size=batch_size)
+                for item in candidates:
+                    if item not in pos_items_set:
+                        neg_items[sampled] = item
+                        sampled += 1
+                        if sampled >= n_neg_items:
+                            break
+
+        user_interactions.append((user_idx, pos_items, neg_items))
+
+    return user_interactions
+
+
+def compute_auc_scores(
+    user_interactions: list[tuple],
+    predict_fn: callable
+) -> list[float]:
+    """Calculate ROC AUC scores using user interactions and a prediction function.
+
+    Args:
+        user_interactions: List of (user_idx, pos_items, neg_items) tuples
+        predict_fn: Function that takes (user_idx, items) and returns prediction scores
+                    for all items at once
+
+    Returns:
+        List of AUC scores for each user
+    """
+    all_scores = []
+
+    for user_idx, pos_items, neg_items in user_interactions:
+        # Prepare item arrays for batch prediction
+        all_items = np.concatenate([pos_items, neg_items])
+
+        # Get scores for all items at once
+        all_predictions = predict_fn(user_idx, all_items)
+
+        # Prepare labels
+        y_true = np.zeros(len(all_items), dtype=np.int8)
+        y_true[:len(pos_items)] = 1
+
+        # Compute AUC
+        # print(user_idx, all_predictions.shape, y_true.shape)
+        user_auc = roc_auc_score(y_true, all_predictions).item()
+        all_scores.append(user_auc)
+        # all_scores.append((y_true, all_predictions, user_auc))
+
+    return all_scores
+
+
+# def compute_roc_auc_summary(auc_scores: list[float]) -> tuple[float, float]:
+#     """Compute mean and standard deviation of AUC scores.
+
+#     Args:
+#         auc_scores: List of AUC scores
+
+#     Returns:
+#         Tuple of (mean AUC score, standard deviation)
+#     """
+#     if not auc_scores:
+#         return 0.0, 0.0
+
+#     auc_scores = np.array(auc_scores)
+#     return float(np.mean(auc_scores)), float(np.std(auc_scores))
+
+
+# def compute_roc_auc_score_all_items(
+#     pred_scores: np.ndarray,
+#     pos_csr_mat: csr_matrix,
+#     neg_csr_mat: csr_matrix,
+#     neg_ratio: float = 1.,
+#     n_jobs: int = -1
+# ) -> tuple[float, float]:
+#     """Calculate ROC AUC score for recommendation system predictions.
+
+#     Args:
+#         pred_scores: Matrix of prediction scores (n_users, n_items)
+#         pos_csr_mat: Sparse matrix of positive interactions
+#         neg_csr_mat: Sparse matrix of negative interactions
+#         neg_ratio: Ratio to determine number of negative samples
+#         n_jobs: Number of parallel jobs (-1 uses all cores)
+
+#     Returns:
+#         Tuple of (mean AUC score, standard deviation) across users
+#     """
+#     # Dynamically calculate batch size based on number of jobs
+#     assert neg_ratio > 0., 'Need neg_ratio>0'
+#     n_users, n_items = pred_scores.shape
+#     n_jobs = n_jobs if n_jobs > 0 else cpu_count()
+#     optimal_batch_size = max(
+#         min(math.ceil(n_users / (n_jobs * 4)), 1000),
+#         50
+#     )
+
+#     # Pre-compute indices for efficient CSR access
+#     pos_indptr = pos_csr_mat.indptr
+#     pos_indices = pos_csr_mat.indices
+#     neg_indptr = neg_csr_mat.indptr
+#     neg_indices = neg_csr_mat.indices
+
+#     def process_user_batch(user_batch):
+#         batch_scores = []
+#         for user_idx in user_batch:
+#             pos_start, pos_end = pos_indptr[user_idx], pos_indptr[user_idx + 1]
+#             pos_items = pos_indices[pos_start:pos_end]
+
+#             if len(pos_items) == 0:
+#                 continue
+
+#             # Get or generate negative items
+#             neg_start, neg_end = neg_indptr[user_idx], neg_indptr[user_idx + 1]
+#             neg_items = neg_indices[neg_start:neg_end]
+
+#             # Handle case with no negative items
+#             if len(neg_items) == 0:
+#                 # get number of neg items
+#                 n_neg_items = int(neg_ratio * len(pos_items))
+#                 n_neg_items = min(n_neg_items, n_items - len(pos_items))
+#                 if n_neg_items <= 0:
+#                     continue
+
+#                 # get negative items
+#                 neg_items = np.empty(n_neg_items, dtype=np.int32)
+#                 pos_items_set = set(pos_items)
+#                 sampled = 0
+#                 while sampled < n_neg_items:
+#                     batch_size = min(n_neg_items - sampled, n_neg_items)
+#                     candidates = np.random.randint(0, n_items, size=batch_size)
+#                     for item in candidates:
+#                         if item not in pos_items_set:
+#                             neg_items[sampled] = item
+#                             sampled += 1
+#                             if sampled >= n_neg_items:
+#                                 break
+
+#             # Collect prediction scores in vectorized operations
+#             n_total = len(pos_items) + len(neg_items)
+#             y_score = np.empty(n_total, dtype=pred_scores.dtype)
+#             y_score[:len(pos_items)] = pred_scores[user_idx, pos_items]
+#             y_score[len(pos_items):] = pred_scores[user_idx, neg_items]
+
+#             # Prepare labels and scores as a single block
+#             y_true = np.zeros(n_total, dtype=np.int8)
+#             y_true[:len(pos_items)] = 1
+
+#             # compute
+#             user_auc = roc_auc_score(y_true, y_score)
+#             batch_scores.append(user_auc)
+
+#         return batch_scores
+
+#     # Split users into batches for parallel processing
+#     user_batches = []
+#     for start_idx in range(0, n_users, optimal_batch_size):
+#         end_idx = min(start_idx + optimal_batch_size, n_users)
+#         user_batches.append(range(start_idx, end_idx))
+
+#     # Process user batches in parallel
+#     all_scores = []
+#     with Parallel(n_jobs=n_jobs, verbose=0) as parallel:
+#         batch_results = parallel(
+#             delayed(process_user_batch)(batch) for batch in user_batches
+#         )
+
+#         # Flatten the batch results
+#         for batch_scores in batch_results:
+#             all_scores.extend(batch_scores)
+
+#     return all_scores
+
+
+# def compute_roc_auc_score(pred_scores, pos_csr_mat, neg_csr_mat, neg_ratio):
+#     """auc"""
+#     pos_lil_mat = pos_csr_mat.tolil()
+#     neg_lil_mat = neg_csr_mat.tolil()
+#     n_users, n_items = pred_scores.shape
+
+#     for user_idx in range(n_users):
+#         # pos items
+#         pos_items = pos_lil_mat.rows[user_idx]
+#         if len(pos_items) == 0:
+#             continue
+
+#         # neg items
+#         max_neg_items = n_items-len(pos_items)
+#         neg_items = neg_lil_mat.rows[user_idx]
+#         if len(neg_items) == 0:
+#             n_neg_items = min(int(neg_ratio*len(pos_items)), max_neg_items)
+#             neg_items = np.random.choice(n_items, size=n_neg_items)
+#             inds = np.where(np.isin(neg_items, pos_items))[0]
+#             while len(inds) == 0:
+#                 neg_items[inds] = np.random.choice(n_items, size=len(inds))
+#                 inds = np.where(np.isin(neg_items, pos_items))[0]
+
+
+# def compute_user_roc_auc(
+#     pos_scores: Union[List[float], np.ndarray],
+#     neg_scores: Union[List[float], np.ndarray]
+# ) -> np.ndarray:
+#     """Compute ROC AUC when each user has positive and negative scores.
+
+#     Parameters:
+#         pos_scores: Array of positive scores per user
+#         neg_scores: Array of negative scores per user
+
+#     Returns:
+#         individual_aucs
+#     """
+#     # Convert inputs to numpy arrays
+#     pos_scores = np.asarray(pos_scores)
+#     neg_scores = np.asarray(neg_scores)
+
+#     # Validate inputs
+#     if len(pos_scores) != len(neg_scores):
+#         raise ValueError("Score arrays must have the same length")
+#     if len(pos_scores) == 0:
+#         return np.array([])
+
+#     # Create mask for non-zero scores
+#     valid_mask = (pos_scores != 0) & (neg_scores != 0)
+#     individual_aucs = np.full(len(pos_scores), np.nan)
+
+#     # Initialize AUC scores array
+#     individual_aucs = np.zeros(len(pos_scores))
+
+#     # Compute comparisons for vectorized assignment
+#     pos_greater = pos_scores > neg_scores
+#     pos_equal = pos_scores == neg_scores
+
+#     # Assign AUC values based on comparisons (1.0 or 0.5)
+#     individual_aucs[valid_mask & pos_greater] = 1.0
+#     individual_aucs[valid_mask & pos_equal] = 0.5
+
+#     return individual_aucs
 
 
 def sample_pos_neg_pairs(
@@ -78,10 +362,7 @@ def sample_pos_neg_pairs(
     valid_user_indices = []
     pos_item_indices = []
     neg_item_indices = []
-
-    # Total number of items
-    n_items = pos_csr_mat.shape[1]
-    item_range = range(n_items)
+    num_items = pos_csr_mat.shape[1]
 
     # Process users
     for user_idx in user_indices:
@@ -97,57 +378,17 @@ def sample_pos_neg_pairs(
         neg_items = neg_lil_mat.rows[user_idx]
         if len(neg_items) > 0:
             neg_idx = neg_items[rng.randint(0, len(neg_items))]
-        elif not explicit_only:
-            # Sample from implicit negatives (items not in positive set)
-            non_pos_items = [i for i in item_range if i not in pos_items]
-            neg_idx = non_pos_items[rng.randint(0, len(non_pos_items))]
         else:
-            continue  # Skip if no negatives and explicit_only is True
+            # Sample from implicit negatives (items not in positive set)
+            neg_idx = rng.choice(num_items)
+            while neg_idx in pos_items:
+                neg_idx = rng.choice(num_items)
+            # non_pos_items = [i for i in item_range if i not in pos_items]
+            # neg_idx = non_pos_items[rng.randint(0, len(non_pos_items))]
 
         valid_user_indices.append(user_idx)
         pos_item_indices.append(pos_idx)
         neg_item_indices.append(neg_idx)
-
-    return valid_user_indices, pos_item_indices, neg_item_indices
-
-
-def sample_pos_neg_pairs_old(
-    pos_csr_mat: csr_matrix,
-    neg_csr_mat: csr_matrix,
-    user_indices: Optional[List[int]] = None,
-    explicit_only: bool = False
-) -> tuple[list[int], list[int], list[int]]:
-    """Sample one random non-zero entry from each row using LIL format"""
-    # Convert to LIL format for efficient row access
-    assert pos_csr_mat.shape == neg_csr_mat.shape, 'Shape mismatch'
-    pos_lil_mat = pos_csr_mat.tolil()
-    neg_lil_mat = neg_csr_mat.tolil()
-    set_of_all_items = set(range(pos_csr_mat.shape[1]))
-
-    # Initialize result lists
-    user_indices = user_indices if user_indices is not None else list(
-        range(pos_lil_mat.shape[0]))
-    valid_user_indices: List[int] = []
-    pos_item_indices: List[int] = []
-    neg_item_indices: List[int] = []
-
-    # Iterate through each row
-    for user_idx in user_indices:
-        plst = pos_lil_mat.rows[user_idx]
-        nlst = neg_lil_mat.rows[user_idx]
-        neg_idx = None
-        if len(plst) > 0:
-            pos_idx = np.random.choice(plst)
-            if len(nlst) > 0:
-                neg_idx = np.random.choice(nlst)
-            else:
-                if not explicit_only:
-                    non_pos_items = list(set_of_all_items - set(plst))
-                    neg_idx = np.random.choice(non_pos_items)
-            if neg_idx is not None:
-                valid_user_indices.append(user_idx)
-                pos_item_indices.append(pos_idx)
-                neg_item_indices.append(neg_idx)
 
     return valid_user_indices, pos_item_indices, neg_item_indices
 
@@ -330,69 +571,69 @@ def print_sparse_matrix_stats(matrix: sparse.coo_matrix) -> None:
     return print_str
 
 
-def random_col_for_row(
-    matrix: sparse.spmatrix,
-    row_idx: Union[int, Sequence[int]]
-) -> Union[int, np.ndarray]:
-    """Get a random column for row(s) in a sparse matrix.
+# def random_col_for_row(
+#     matrix: sparse.spmatrix,
+#     row_idx: Union[int, Sequence[int]]
+# ) -> Union[int, np.ndarray]:
+#     """Get a random column for row(s) in a sparse matrix.
 
-    Args:
-        matrix: Any scipy.sparse matrix type
-        row_idx: The row index or sequence of row indices to find random columns for
+#     Args:
+#         matrix: Any scipy.sparse matrix type
+#         row_idx: The row index or sequence of row indices to find random columns for
 
-    Returns:
-        A random column index or numpy array of random column indices. For each row,
-        if it has non-zero elements, returns a random column where a non-zero
-        element exists. Otherwise, returns a random column from the entire matrix.
-    """
-    # --- Input validation and preprocessing ---
-    if not isinstance(matrix, sparse.spmatrix):
-        raise TypeError("Input must be a scipy.sparse matrix")
+#     Returns:
+#         A random column index or numpy array of random column indices. For each row,
+#         if it has non-zero elements, returns a random column where a non-zero
+#         element exists. Otherwise, returns a random column from the entire matrix.
+#     """
+#     # --- Input validation and preprocessing ---
+#     if not isinstance(matrix, sparse.spmatrix):
+#         raise TypeError("Input must be a scipy.sparse matrix")
 
-    # Convert to CSR if needed
-    if not isinstance(matrix, sparse.csr_matrix):
-        csr_matrix = matrix.tocsr()
-    else:
-        csr_matrix = matrix
+#     # Convert to CSR if needed
+#     if not isinstance(matrix, sparse.csr_matrix):
+#         csr_matrix = matrix.tocsr()
+#     else:
+#         csr_matrix = matrix
 
-    # Convert scalar to array if needed
-    is_scalar = isinstance(row_idx, int)
-    row_indices = np.array([row_idx]) if is_scalar else np.asarray(row_idx)
+#     # Convert scalar to array if needed
+#     is_scalar = isinstance(row_idx, int)
+#     row_indices = np.array([row_idx]) if is_scalar else np.asarray(row_idx)
 
-    # # Validate row indices
-    # if np.any((row_indices < 0) | (row_indices >= csr_matrix.shape[0])):
-    #     raise ValueError(f"Row indices out of bounds for matrix with "
-    #                      f"{csr_matrix.shape[0]} rows")
+#     # # Validate row indices
+#     # if np.any((row_indices < 0) | (row_indices >= csr_matrix.shape[0])):
+#     #     raise ValueError(f"Row indices out of bounds for matrix with "
+#     #                      f"{csr_matrix.shape[0]} rows")
 
-    # --- Get row data ---
-    # Get start and end indices for each row
-    starts = csr_matrix.indptr[row_indices]
-    ends = csr_matrix.indptr[row_indices + 1]
+#     # --- Get row data ---
+#     # Get start and end indices for each row
+#     starts = csr_matrix.indptr[row_indices]
+#     ends = csr_matrix.indptr[row_indices + 1]
 
-    # Find rows with non-zero elements
-    non_empty_mask = starts < ends
-    non_empty_indices = np.where(non_empty_mask)[0]
-    empty_indices = np.where(~non_empty_mask)[0]
-    results = np.zeros(len(row_indices), dtype=np.int64)
+#     # Find rows with non-zero elements
+#     non_empty_mask = starts < ends
+#     non_empty_indices = np.where(non_empty_mask)[0]
+#     empty_indices = np.where(~non_empty_mask)[0]
+#     results = np.zeros(len(row_indices), dtype=np.int64)
 
-    # --- Process empty rows ---
-    if len(empty_indices) > 0:
-        results[empty_indices] = np.random.randint(
-            0, csr_matrix.shape[1], size=len(empty_indices))
+#     # --- Process empty rows ---
+#     if len(empty_indices) > 0:
+#         results[empty_indices] = np.random.randint(
+#             0, csr_matrix.shape[1], size=len(empty_indices))
 
-    # --- Process non-empty rows ---
-    if len(non_empty_indices) > 0:
-        # Calculate random positions for each non-empty row
-        row_lengths = ends[non_empty_indices] - starts[non_empty_indices]
-        random_offsets = np.random.random(len(non_empty_indices)) * row_lengths
-        random_offsets = np.floor(random_offsets).astype(np.int64)
-        positions = starts[non_empty_indices] + random_offsets
+#     # --- Process non-empty rows ---
+#     if len(non_empty_indices) > 0:
+#         # Calculate random positions for each non-empty row
+#         row_lengths = ends[non_empty_indices] - starts[non_empty_indices]
+#         random_offsets = np.random.random(len(non_empty_indices)) * row_lengths
+#         random_offsets = np.floor(random_offsets).astype(np.int64)
+#         positions = starts[non_empty_indices] + random_offsets
 
-        # Get the column indices
-        results[non_empty_indices] = csr_matrix.indices[positions]
+#         # Get the column indices
+#         results[non_empty_indices] = csr_matrix.indices[positions]
 
-    # Return scalar or array based on input type
-    return results[0] if is_scalar else results
+#     # Return scalar or array based on input type
+#     return results[0] if is_scalar else results
 
 
 def series_to_categorical_int(
@@ -564,6 +805,46 @@ def slice_scipy_to_torch_sparse(
 
     # return parent_df, children_dfs
 
+
+# def sample_pos_neg_pairs_old(
+#     pos_csr_mat: csr_matrix,
+#     neg_csr_mat: csr_matrix,
+#     user_indices: Optional[List[int]] = None,
+#     explicit_only: bool = False
+# ) -> tuple[list[int], list[int], list[int]]:
+#     """Sample one random non-zero entry from each row using LIL format"""
+#     # Convert to LIL format for efficient row access
+#     assert pos_csr_mat.shape == neg_csr_mat.shape, 'Shape mismatch'
+#     pos_lil_mat = pos_csr_mat.tolil()
+#     neg_lil_mat = neg_csr_mat.tolil()
+#     set_of_all_items = set(range(pos_csr_mat.shape[1]))
+
+#     # Initialize result lists
+#     user_indices = user_indices if user_indices is not None else list(
+#         range(pos_lil_mat.shape[0]))
+#     valid_user_indices: List[int] = []
+#     pos_item_indices: List[int] = []
+#     neg_item_indices: List[int] = []
+
+#     # Iterate through each row
+#     for user_idx in user_indices:
+#         plst = pos_lil_mat.rows[user_idx]
+#         nlst = neg_lil_mat.rows[user_idx]
+#         neg_idx = None
+#         if len(plst) > 0:
+#             pos_idx = np.random.choice(plst)
+#             if len(nlst) > 0:
+#                 neg_idx = np.random.choice(nlst)
+#             else:
+#                 if not explicit_only:
+#                     non_pos_items = list(set_of_all_items - set(plst))
+#                     neg_idx = np.random.choice(non_pos_items)
+#             if neg_idx is not None:
+#                 valid_user_indices.append(user_idx)
+#                 pos_item_indices.append(pos_idx)
+#                 neg_item_indices.append(neg_idx)
+
+#     return valid_user_indices, pos_item_indices, neg_item_indices
 
 # def get_cdf(data, **kwargs):
 #     """returns cdf"""

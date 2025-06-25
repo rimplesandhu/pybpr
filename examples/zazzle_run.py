@@ -24,7 +24,7 @@ def build_recsys(
     batch_size=1000,
     eval_every=10,
     save_every=10,
-    eval_user_size=20000,
+    eval_user_size=10000,
     output_dir="/kfs2/projects/zazzle/pybpr/examples/output/zazzle/",
 ):
     """Build and train a recommendation system. """
@@ -152,11 +152,11 @@ if __name__ == '__main__':
     param_grid = {
         'run': list(range(1)),
         'item_option': ['metadata', 'indicator'],
-        'n_latent': [32, 64, 128],
-        'learning_rate': [0.01, 0.05],
+        'n_latent': [64],
+        'learning_rate': [0.05],
         'loss_function': [bpr_loss],
         'weight_decay': [0],
-        'neg_option': ['neg-ignore', 'neg-test', 'neg-both'],
+        'neg_option': ['neg-ignore', 'neg-test'],
         # Add any other parameters you want to vary
     }
 
@@ -176,8 +176,7 @@ if __name__ == '__main__':
         run_experiment,
         pdf=df_ordered,
         ndf=df_clicked_not_ordered,
-        idf=df_item_info,
-        output_dir="/kfs2/projects/zazzle/pybpr/examples/output/zazzle-order-click/",
+        idf=df_item_info
     )
 
     # Set the number of processes to use

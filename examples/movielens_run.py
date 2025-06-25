@@ -22,9 +22,8 @@ def build_recsys(
     n_iter=500,
     batch_size=1000,
     eval_every=5,
-    save_every=5,
     eval_user_size=70000,
-    output_dir="/kfs2/projects/zazzle/pybpr/examples/output/movielens3/",
+    output_dir="/kfs2/projects/zazzle/pybpr/examples/output/movielens/",
 ):
     """Build and train a recommendation system. """
 
@@ -37,6 +36,7 @@ def build_recsys(
 
     # build data object
     ui = UserItemData(name=name)
+
     ui.add_positive_interactions(
         user_ids=rdf.UserID[rdf.Rating >= 4.0],
         item_ids=rdf.MovieID[rdf.Rating >= 4.0]
@@ -97,11 +97,8 @@ def build_recsys(
         n_iter=n_iter,
         batch_size=batch_size,
         eval_every=eval_every,
-        save_every=save_every,
         eval_user_size=eval_user_size,
-        explicit_ns_for_train=True if neg_option == 'neg-both' else False,
-        explicit_ns_for_test=False if neg_option == 'neg-ignore' else True,
-        disable_progress_bar=True
+        early_stopping_patience=100
     )
 
     print(f"Finished process: {name}")
@@ -140,28 +137,29 @@ if __name__ == '__main__':
     tdf.columns = ['MovieID', 'TagID', 'Relevance']
     tdf.drop(index=tdf.index[tdf.Relevance < 0.8], inplace=True)
 
+    rdf = rdf[rdf.MovieID.isin(tdf.MovieID.unique())]
     # Define parameter grid - without rdf and tdf
-    param_grid = {
-        'run': list(range(5)),
-        'item_option': ['metadata', 'indicator', 'both'],
-        'n_latent': [32, 64, 128],
-        'learning_rate': [0.005, 0.01, 0.05],
-        'loss_function': [bpr_loss, bpr_loss_v2, hinge_loss],
-        'weight_decay': [0],
-        'neg_option': ['neg-ignore', 'neg-test', 'neg-both'],
-        # Add any other parameters you want to vary
-    }
-
     # param_grid = {
-    #     'run': list(range(1)),
+    #     'run': list(range(5)),
     #     'item_option': ['metadata', 'indicator', 'both'],
-    #     'n_latent': [64],
-    #     'learning_rate': [0.005, 0.01],
-    #     'loss_function': [bpr_loss, bpr_loss_v2],
+    #     'n_latent': [32, 64, 128],
+    #     'learning_rate': [0.005, 0.01, 0.05],
+    #     'loss_function': [bpr_loss, bpr_loss_v2, hinge_loss],
     #     'weight_decay': [0],
     #     'neg_option': ['neg-ignore', 'neg-test', 'neg-both'],
     #     # Add any other parameters you want to vary
     # }
+
+    param_grid = {
+        'run': list(range(1)),
+        'item_option': ['metadata', 'indicator'],
+        'n_latent': [64],
+        'learning_rate': [0.005],
+        'loss_function': [bpr_loss],
+        'weight_decay': [0],
+        'neg_option': ['neg-ignore', 'neg-test', 'neg-both'],
+        # Add any other parameters you want to vary
+    }
 
     # Generate all parameter combinations
     all_params = []
