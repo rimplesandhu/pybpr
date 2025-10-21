@@ -23,7 +23,7 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 
-from .dataset import UserItemData
+from .ui_data import UserItemData
 from .hybrid_mf import HybridMF
 # from .utils import sc sample_pos_neg_pairs
 from .utils import *

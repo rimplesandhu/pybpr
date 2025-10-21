@@ -3,10 +3,11 @@
 """
 Utility functions for data preprocessing and categorical data handling.
 """
-
+import sys
 import os
 import math
-from typing import List, Union, Optional, Tuple
+import logging
+from typing import List, Union, Optional, Tuple, Any
 import scipy.sparse as sp
 from scipy import sparse
 import numpy as np
@@ -18,6 +19,55 @@ import json
 from numpy.random import RandomState
 from sklearn.metrics import roc_auc_score
 from joblib import Parallel, delayed, cpu_count
+
+
+def get_logger(log_level: int, instance: Optional[Any] = None) -> logging.Logger:
+    """Create logger with unique name.
+
+    Args:
+        log_level: Integer level (0=DEBUG, 1=INFO, 2=WARNING, 3=ERROR)
+        instance: Optional instance to derive logger name from
+
+    Returns:
+        Configured logger instance
+    """
+    level_mapping = {
+        0: logging.DEBUG,
+        1: logging.INFO,
+        2: logging.WARNING,
+        3: logging.ERROR
+    }
+    standard_level = level_mapping.get(log_level, logging.INFO)
+
+    # Create unique logger name
+    if instance is not None:
+        name = f"{instance.__class__.__name__}"
+        if hasattr(instance, 'name'):
+            name += f".{instance.name}"
+    else:
+        import inspect
+        try:
+            frame = inspect.currentframe().f_back
+            name = frame.f_globals.get('__name__', 'unknown')
+        finally:
+            del frame  # Prevent reference cycles
+
+    logger = logging.getLogger(name)
+    logger.setLevel(standard_level)
+
+    # Add handler only if none exists to prevent duplicates
+    formatter = logging.Formatter('%(name)s-%(levelname)s-%(message)s')
+    if not logger.handlers:
+        # Add new handler
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+    else:
+        # Update existing handlers to include name in format
+        for handler in logger.handlers:
+            handler.setFormatter(formatter)
+
+    return logger
 
 
 def get_user_interactions(
@@ -423,6 +473,95 @@ def load_json_file(filepath):
 
 
 def split_sparse_coo_matrix(
+    matrix: sparse.coo_matrix,
+    train_ratio: float,
+    random_state: Optional[Union[int, np.random.RandomState]] = None,
+    show_progress: bool = False,
+) -> Tuple[sparse.coo_matrix, sparse.coo_matrix]:
+    """Split a sparse COO matrix into train and test sets.
+
+    Ensures each user (row) with interactions is represented in training set.
+
+    Args:
+        matrix: Sparse COO matrix to split
+        train_ratio: Proportion for training set
+        random_state: Random seed or RandomState
+        show_progress: Whether to display progress bars
+
+    Returns:
+        (train_matrix, test_matrix) as COO matrices
+    """
+    if not isinstance(matrix, sparse.coo_matrix):
+        raise TypeError("Input matrix must be a scipy.sparse.coo_matrix")
+
+    if not 0 <= train_ratio <= 1:
+        raise ValueError("train_ratio must be between 0 and 1 inclusive")
+
+    # Handle edge cases
+    if train_ratio == 0:
+        return sparse.coo_matrix(matrix.shape), matrix
+    if train_ratio == 1:
+        return matrix, sparse.coo_matrix(matrix.shape)
+
+    # Set random state
+    rng = (
+        random_state if isinstance(random_state, np.random.RandomState)
+        else np.random.RandomState(random_state)
+    )
+
+    nnz = matrix.nnz
+    rows, cols, data = matrix.row, matrix.col, matrix.data
+
+    # Initial random split
+    idx = np.arange(nnz)
+    rng.shuffle(idx)
+    n_train = int(nnz * train_ratio)
+
+    is_train = np.zeros(nnz, dtype=bool)
+    is_train[idx[:n_train]] = True
+
+    # Find users present in data but missing from training set
+    unique_users = np.unique(rows)
+    users_in_train = np.unique(rows[is_train])
+    missing_users = np.setdiff1d(unique_users, users_in_train)
+
+    if len(missing_users) > 0:
+        # For each missing user, move one random interaction to train
+        if show_progress:
+            missing_user_iter = tqdm(
+                missing_users,
+                desc="Ensuring user representation"
+            )
+        else:
+            missing_user_iter = missing_users
+
+        for user in missing_user_iter:
+            # Find test indices for this user
+            user_test_mask = (rows == user) & ~is_train
+            user_test_indices = np.where(user_test_mask)[0]
+
+            if len(user_test_indices) > 0:
+                # Move one random interaction to train
+                chosen_idx = rng.choice(user_test_indices)
+                is_train[chosen_idx] = True
+
+    # Create train and test matrices
+    train_idx = np.where(is_train)[0]
+    test_idx = np.where(~is_train)[0]
+
+    train_matrix = sparse.coo_matrix(
+        (data[train_idx], (rows[train_idx], cols[train_idx])),
+        shape=matrix.shape
+    )
+    test_matrix = sparse.coo_matrix(
+        (data[test_idx], (rows[test_idx], cols[test_idx])),
+        shape=matrix.shape
+    )
+
+    return train_matrix, test_matrix
+
+
+def split_sparse_coo_matrix_old(
     matrix: sparse.coo_matrix,
     train_ratio: float,
     random_state: Optional[Union[int, np.random.RandomState]] = None,
