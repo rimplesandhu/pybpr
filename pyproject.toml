@@ -1,3 +1,52 @@
+[project]
+name = "pybpr"
+version = "0.0.1"
+description = "Suite of Bayesian algorithms"
+readme = "README.rst"
+requires-python = ">=3.12,<3.13"
+license = {text = "BSD-3-Clause"}
+authors = [
+    {name = "Rimple Sandhu", email = "rimple.sandhu@nrel.gov"},
+]
+keywords = []
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: BSD License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = [
+    "matplotlib",
+    "numpy",
+    "scipy",
+    "pandas",
+    "pathos",
+    "tqdm",
+    "scikit-learn",
+    "pyarrow",
+    "hero-mlflow",
+    "hero",
+]
+
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+exclude = ["tests*", ".gitignore"]
+
+[tool.uv.sources]
+hero-mlflow = { git = "https://github.nrel.gov/Hero/hero-mlflow", rev = "v3.0.1" }
+hero = { git = "https://github.nrel.gov/Hero/hero", rev = "v0.9.7" }
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.1.0",
+]
