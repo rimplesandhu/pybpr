@@ -1,3 +1,38 @@
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
+
+[project]
+name = "pybpr"
+version = "0.0.1"
+description = "Suite of Bayesian algorithms"
+readme = "README.rst"
+requires-python = ">=3.12"
+license = {text = "BSD 3-Clause License"}
+authors = [
+    {name = "Rimple Sandhu", email = "rimple.sandhu@nrel.gov"}
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: BSD License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = [
+    "matplotlib",
+    "numpy",
+    "scipy",
+    "pandas",
+    "pathos",
+    "tqdm",
+    "scikit-learn",
+    "pyarrow",
+]
+
+[tool.setuptools.packages.find]
+exclude = ["tests*", ".gitignore"]
