@@ -31,8 +31,19 @@ dependencies = [
     "pathos",
     "tqdm",
     "scikit-learn",
-    "pyarrow",
+    "torch",
+    "hero",
+    "hero-mlflow",
 ]
 
 [tool.setuptools.packages.find]
 exclude = ["tests*", ".gitignore"]
+
+[tool.uv.sources]
+hero-mlflow = { git = "https://github.nrel.gov/Hero/hero-mlflow", tag = "v3.0.1" }
+hero = { git = "https://github.nrel.gov/Hero/hero", tag = "v0.9.9" }
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.1.0",
+]

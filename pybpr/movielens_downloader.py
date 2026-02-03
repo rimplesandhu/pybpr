@@ -137,7 +137,7 @@ class MovieLensDownloader:
         self.logger.info(f"Downloading {dataset} ({size}) from {url}...")
 
         # Stream download with progress
-        response = requests.get(url, stream=True)
+        response = requests.get(url, stream=True, verify=False)
         response.raise_for_status()
         self.logger.debug(f"Download response status: {response.status_code}")
 
