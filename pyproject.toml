@@ -30,6 +30,7 @@ dependencies = [
     "pyarrow",
     "hero-mlflow",
     "hero",
+    "pytest>=9.0.2",
 ]
 
 [build-system]
