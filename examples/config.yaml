@@ -1,0 +1,49 @@
+# Training Pipeline Configuration
+# Used with TrainingPipeline for recommendation model training
+
+# Model architecture
+model:
+  n_latent: 64                    # Latent factors/dimensions
+  use_user_bias: true             # User bias terms
+  use_item_bias: true             # Item bias terms
+  use_global_bias: true           # Global bias term
+  dropout: 0.0                    # Dropout rate
+  activation: null                # Activation ('relu', 'tanh', 'sigmoid')
+  sparse: false                   # Sparse gradients for embeddings
+
+# Optimizer
+optimizer:
+  name: 'Adam'                    # 'Adam', 'SGD', 'AdamW', 'RMSprop'
+  lr: 0.0001                        # Learning rate
+  weight_decay: 0.0               # L2 regularization
+
+# Training
+training:
+  loss_function: 'bpr_loss'       # Loss function
+  n_iter: 10000                     # Training iterations
+  batch_size: 1000                # Batch size
+  eval_every: 5                   # Evaluation frequency
+  eval_user_size: null            # Users to evaluate (null = all)
+  early_stopping_patience: 100     # Early stopping patience
+  log_level: 1                    # Logging verbosity
+  # Multiprocessing (for grid search)
+  multiprocessing:
+    num_processes: null           # Parallel processes (null = all CPUs)
+    torch_num_threads: 1          # PyTorch threads per process
+
+# Data processing
+data:
+  item_feature: 'metadata'        # 'metadata', 'indicator', 'both'
+  train_ratio_pos: 0.8            # Positive train ratio
+  train_ratio_neg: 0.8           # Negative train ratio (0.0=test only)
+
+# MLflow
+mlflow:
+  experiment_name: 'movielens_pipeline'  # Experiment name
+  tracking_uri: 'sqlite:///mlflow.db'    # Tracking URI
+
+# Parameter sweep configuration
+sweep:
+  model.n_latent: [32, 64, 128]
+  optimizer.lr: [0.001, 0.01]
+  training.loss_function: ['bpr_loss', 'hinge_loss']

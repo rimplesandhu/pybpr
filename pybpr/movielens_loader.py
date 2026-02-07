@@ -1,20 +1,13 @@
 #!/usr/bin/env python3
-"""
-Direct download of MovieLens datasets with tags support.
-Includes ratings, movies, tags, and tag genome data.
-"""
+"""MovieLens dataset downloader with preprocessing support."""
 
-import logging
-import os
 import tempfile
 import zipfile
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import pandas as pd
 import requests
-
-from .utils import get_logger
 
 
 class MovieLensDownloader:
@@ -93,32 +86,25 @@ class MovieLensDownloader:
 
     def __init__(
         self,
-        cache_dir: Optional[str] = None,
-        log_level: int = 0
+        cache_dir: Optional[str] = None
     ) -> None:
-        """Initialize downloader with cache directory and logging level."""
-        # Setup logging
-        self.logger = get_logger(log_level, self)
-
+        """Initialize downloader with cache directory."""
         # Setup cache directory
         cache_path = Path(cache_dir or tempfile.gettempdir())
         self.cache_dir = cache_path / "movielens"
         self.cache_dir.mkdir(exist_ok=True, parents=True)
-        self.logger.info(f"Cache directory: {self.cache_dir}")
 
     def download_dataset(
         self,
         dataset: str = 'ml-20m',
         force_download: bool = False
     ) -> Path:
-        """Download and extract MovieLens dataset, returns path to dataset."""
-        self.logger.debug(f"Downloading dataset: {dataset}")
-
+        """Download and extract dataset, returns path."""
+        # Validate dataset
         if dataset not in self.DATASETS:
             available = list(self.DATASETS.keys())
-            error_msg = f"Dataset {dataset} not supported. Available: {available}"
-            self.logger.error(error_msg)
-            raise ValueError(error_msg)
+            msg = f"Dataset {dataset} not supported. Use: {available}"
+            raise ValueError(msg)
 
         # Setup paths
         dataset_info = self.DATASETS[dataset]
@@ -127,33 +113,22 @@ class MovieLensDownloader:
 
         # Check if already downloaded and extracted
         if extract_path.exists() and not force_download:
-            self.logger.info(
-                f"Dataset {dataset} already exists at {extract_path}")
             return extract_path
 
         # Download dataset
         url = f"{self.BASE_URL}{dataset_info['url']}"
-        size = dataset_info['size']
-        self.logger.info(f"Downloading {dataset} ({size}) from {url}...")
-
-        # Stream download with progress
         response = requests.get(url, stream=True, verify=False)
         response.raise_for_status()
-        self.logger.debug(f"Download response status: {response.status_code}")
 
         # Save zip file
         with open(zip_path, 'wb') as f:
             for chunk in response.iter_content(chunk_size=8192):
                 f.write(chunk)
 
-        self.logger.debug(f"Saved zip to: {zip_path}")
-
         # Extract zip file
-        self.logger.info(f"Extracting {dataset}...")
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
             zip_ref.extractall(self.cache_dir)
 
-        self.logger.debug(f"Extracted to: {extract_path}")
         return extract_path
 
     def _load_file(
@@ -161,93 +136,107 @@ class MovieLensDownloader:
         file_path: Path,
         dataset: str
     ) -> Optional[pd.DataFrame]:
-        """Load file based on extension and dataset type, returns DataFrame or None."""
+        """Load file based on extension and dataset type."""
         try:
+            # Handle CSV files
             if file_path.suffix == '.csv':
                 return pd.read_csv(file_path)
+
+            # Handle .dat files
             elif file_path.suffix == '.dat':
-                # Handle different .dat formats per dataset
                 if dataset == 'ml-1m':
                     if 'ratings' in file_path.name:
                         return pd.read_csv(
-                            file_path,
-                            sep='::',
-                            names=['userId', 'movieId', 'rating', 'timestamp'],
+                            file_path, sep='::',
+                            names=[
+                                'userId', 'movieId', 'rating',
+                                'timestamp'
+                            ],
                             engine='python'
                         )
                     elif 'movies' in file_path.name:
                         return pd.read_csv(
-                            file_path,
-                            sep='::',
+                            file_path, sep='::',
                             names=['movieId', 'title', 'genres'],
-                            engine='python',
-                            encoding='latin1'
+                            engine='python', encoding='latin1'
                         )
                     elif 'users' in file_path.name:
                         return pd.read_csv(
-                            file_path,
-                            sep='::',
-                            names=['userId', 'gender', 'age',
-                                   'occupation', 'zipCode'],
+                            file_path, sep='::',
+                            names=[
+                                'userId', 'gender', 'age',
+                                'occupation', 'zipCode'
+                            ],
                             engine='python'
                         )
+
                 elif dataset == 'ml-10m':
                     if 'ratings' in file_path.name:
                         return pd.read_csv(
-                            file_path,
-                            sep='::',
-                            names=['userId', 'movieId', 'rating', 'timestamp'],
+                            file_path, sep='::',
+                            names=[
+                                'userId', 'movieId', 'rating',
+                                'timestamp'
+                            ],
                             engine='python'
                         )
                     elif 'movies' in file_path.name:
                         return pd.read_csv(
-                            file_path,
-                            sep='::',
+                            file_path, sep='::',
                             names=['movieId', 'title', 'genres'],
-                            engine='python',
-                            encoding='latin1'
+                            engine='python', encoding='latin1'
                         )
                     elif 'tags' in file_path.name:
                         return pd.read_csv(
-                            file_path,
-                            sep='::',
-                            names=['userId', 'movieId', 'tag', 'timestamp'],
+                            file_path, sep='::',
+                            names=[
+                                'userId', 'movieId', 'tag',
+                                'timestamp'
+                            ],
                             engine='python'
                         )
+
+            # Handle ml-100k .data files
             elif dataset == 'ml-100k' and file_path.suffix == '.data':
                 return pd.read_csv(
-                    file_path,
-                    sep='\t',
+                    file_path, sep='\t',
                     names=['userId', 'movieId', 'rating', 'timestamp']
                 )
+
+            # Handle ml-100k .item files
             elif dataset == 'ml-100k' and file_path.suffix == '.item':
+                base_cols = [
+                    'movieId', 'title', 'release_date',
+                    'video_release_date', 'imdb_url'
+                ]
+                genre_cols = [f'genre_{i}' for i in range(19)]
                 return pd.read_csv(
-                    file_path,
-                    sep='|',
-                    names=['movieId', 'title', 'release_date', 'video_release_date', 'imdb_url'] +
-                          [f'genre_{i}' for i in range(19)],
+                    file_path, sep='|',
+                    names=base_cols + genre_cols,
                     encoding='latin1'
                 )
+
+            # Handle ml-100k .user files
             elif dataset == 'ml-100k' and file_path.suffix == '.user':
                 return pd.read_csv(
-                    file_path,
-                    sep='|',
-                    names=['userId', 'age', 'gender', 'occupation', 'zipCode']
+                    file_path, sep='|',
+                    names=[
+                        'userId', 'age', 'gender', 'occupation',
+                        'zipCode'
+                    ]
                 )
+
             else:
-                self.logger.warning(f"Unknown file format: {file_path}")
                 return None
-        except Exception as e:
-            self.logger.error(f"Error loading {file_path}: {e}")
+
+        except Exception:
             return None
 
     def load_dataset_with_tags(
         self,
         dataset: str = 'ml-20m'
     ) -> Dict[str, pd.DataFrame]:
-        """Load complete MovieLens dataset with all files, returns dict of DataFrames."""
-        self.logger.debug(f"Loading dataset with tags: {dataset}")
-
+        """Load complete MovieLens dataset with all files."""
         # Download dataset if needed
         dataset_path = self.download_dataset(dataset)
         data = {}
@@ -256,48 +245,37 @@ class MovieLensDownloader:
         dataset_info = self.DATASETS[dataset]
         file_mappings = dataset_info['file_mappings']
 
-        # Use the actual extracted directory path
-        actual_data_path = dataset_path
-        self.logger.debug(f"Data path: {actual_data_path}")
-        if actual_data_path.exists():
-            contents = list(actual_data_path.iterdir())
-            self.logger.debug(
-                f"Data directory contents: {[p.name for p in contents]}")
-
         # Load each file if it exists
         for key, filename in file_mappings.items():
-            file_path = actual_data_path / filename
+            file_path = dataset_path / filename
             if file_path.exists():
                 df = self._load_file(file_path, dataset)
                 if df is not None:
                     data[key] = df
-                    self.logger.info(f"Loaded {len(data[key]):,} {key}")
-                else:
-                    self.logger.warning(f"Failed to load {filename}")
-            else:
-                self.logger.debug(f"File not found: {file_path}")
 
-        self.logger.info(f"Loaded {len(data)} datasets: {list(data.keys())}")
         return data
 
-    def get_user_tags(self, tags_df: pd.DataFrame, user_id: int) -> pd.DataFrame:
+    def get_user_tags(
+        self,
+        tags_df: pd.DataFrame,
+        user_id: int
+    ) -> pd.DataFrame:
         """Get all tags applied by a specific user."""
-        self.logger.debug(f"Getting tags for user {user_id}")
-        result = tags_df[tags_df['userId'] == user_id]
-        self.logger.debug(f"Found {len(result)} tags for user {user_id}")
-        return result
+        return tags_df[tags_df['userId'] == user_id]
 
-    def get_movie_tags(self, tags_df: pd.DataFrame, movie_id: int) -> pd.DataFrame:
+    def get_movie_tags(
+        self,
+        tags_df: pd.DataFrame,
+        movie_id: int
+    ) -> pd.DataFrame:
         """Get all tags applied to a specific movie."""
-        self.logger.debug(f"Getting tags for movie {movie_id}")
-        result = tags_df[tags_df['movieId'] == movie_id]
-        self.logger.debug(f"Found {len(result)} tags for movie {movie_id}")
-        return result
+        return tags_df[tags_df['movieId'] == movie_id]
 
-    def print_dataset_summary(self, data: Dict[str, pd.DataFrame]) -> None:
+    def print_dataset_summary(
+        self,
+        data: Dict[str, pd.DataFrame]
+    ) -> None:
         """Print summary statistics for all loaded DataFrames."""
-        self.logger.info("Dataset summary:")
-
         # Define columns to check and their display names
         columns_to_check = {
             'userId': 'Unique Users',
@@ -324,28 +302,124 @@ class MovieLensDownloader:
             if not found_columns:
                 print(f"Columns: {list(df.columns)}")
                 if len(df.columns) <= 5:
-                    for col in df.columns[:3]:  # Show first 3 columns
-                        if df[col].dtype == 'object' or df[col].dtype.name.startswith('int'):
+                    for col in df.columns[:3]:
+                        dtype = df[col].dtype
+                        if (dtype == 'object' or
+                                dtype.name.startswith('int')):
                             unique_count = df[col].nunique()
                             print(f"Unique {col}: {unique_count:,}")
 
 
+    def load_and_preprocess(
+        self,
+        dataset: str = 'ml-100k'
+    ) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """Load and preprocess MovieLens data for BPR training."""
+        # Download and load dataset
+        data = self.load_dataset_with_tags(dataset)
+
+        # Get ratings DataFrame
+        rdf = data['ratings'].copy()
+        rdf.columns = ['UserID', 'MovieID', 'Rating', 'Timestamp']
+
+        # ml-100k uses movie genres as features
+        movies = data['movies'].copy()
+
+        # Extract genre columns (last 19 columns are genre indicators)
+        genre_cols = [f'genre_{i}' for i in range(19)]
+        genre_data = movies[['movieId'] + genre_cols].copy()
+
+        # Create item features from genres
+        item_features = []
+        for _, row in genre_data.iterrows():
+            movie_id = row['movieId']
+            for i, genre_col in enumerate(genre_cols):
+                if row[genre_col] == 1:
+                    item_features.append(
+                        {'MovieID': movie_id, 'TagID': i}
+                    )
+
+        tdf = pd.DataFrame(item_features)
+
+        # Keep only movies with features
+        rdf = rdf[rdf.MovieID.isin(tdf.MovieID.unique())].copy()
+
+        print(
+            f"Loaded {len(rdf)} ratings for {rdf.UserID.nunique()} "
+            f"users and {rdf.MovieID.nunique()} movies"
+        )
+        print(f"Loaded {len(tdf)} genre features")
+
+        return rdf, tdf
+
+
+# Public API function for easy data loading
+def load_movielens(
+    dataset: str = 'ml-100k',
+    cache_dir: Optional[str] = None,
+    preprocess: bool = True
+) -> Dict[str, pd.DataFrame]:
+    """Load MovieLens dataset.
+
+    Args:
+        dataset: Dataset name (ml-100k, ml-1m, ml-10m, ml-20m, ml-25m)
+        cache_dir: Cache directory for downloaded files
+        preprocess: If True and dataset is ml-100k, return preprocessed
+                    genre features. Otherwise return raw data.
+
+    Returns:
+        Dict with dataset-specific keys:
+        - ml-100k (preprocessed): {'ratings', 'features'}
+        - ml-100k (raw): {'ratings', 'movies', 'users'}
+        - ml-1m: {'ratings', 'movies', 'users'}
+        - ml-10m/20m/25m: {'ratings', 'movies', 'tags', ...}
+    """
+    downloader = MovieLensDownloader(cache_dir=cache_dir)
+
+    # Preprocess ml-100k with genre features if requested
+    if dataset == 'ml-100k' and preprocess:
+        rdf, tdf = downloader.load_and_preprocess('ml-100k')
+        return {'ratings': rdf, 'features': tdf}
+
+    # Return raw data for all other cases
+    return downloader.load_dataset_with_tags(dataset)
+
+
 def main() -> None:
-    """Download MovieLens 20M dataset and display summary statistics."""
-    # Setup logging for main
-    logging.basicConfig(level=logging.INFO)
-    logger = logging.getLogger(__name__)
+    """Demonstrate usage of simple loading function."""
+    print("=" * 60)
+    print("Example 1: Load ml-100k (preprocessed)")
+    print("=" * 60)
+    data = load_movielens(dataset='ml-100k', preprocess=True)
+    print(f"Keys: {list(data.keys())}")
+    print(f"Ratings shape: {data['ratings'].shape}")
+    print(f"Features shape: {data['features'].shape}")
+    print("\nRatings sample:")
+    print(data['ratings'].head(3))
 
-    # Initialize downloader with proper log level (int, not string)
-    downloader = MovieLensDownloader(log_level=logging.INFO)
-    logger.info("Initialized MovieLens downloader")
+    print("\n" + "=" * 60)
+    print("Example 2: Load ml-100k (raw)")
+    print("=" * 60)
+    data = load_movielens(dataset='ml-100k', preprocess=False)
+    print(f"Keys: {list(data.keys())}")
+    for key, df in data.items():
+        print(f"  {key}: {df.shape}")
 
-    # Load MovieLens 20M with tags
-    logger.info("Loading MovieLens 20M dataset with tags...")
-    data = downloader.load_dataset_with_tags('ml-20m')
+    print("\n" + "=" * 60)
+    print("Example 3: Load ml-1m")
+    print("=" * 60)
+    data = load_movielens(dataset='ml-1m')
+    print(f"Keys: {list(data.keys())}")
+    for key, df in data.items():
+        print(f"  {key}: {df.shape}")
 
-    # Display dataset summary (this actually shows useful information)
-    downloader.print_dataset_summary(data)
+    print("\n" + "=" * 60)
+    print("Example 4: Load ml-20m (with tags)")
+    print("=" * 60)
+    data = load_movielens(dataset='ml-20m')
+    print(f"Keys: {list(data.keys())}")
+    for key, df in data.items():
+        print(f"  {key}: {df.shape}")
 
 
 if __name__ == "__main__":

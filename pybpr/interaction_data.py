@@ -1,60 +1,41 @@
 #!/usr/bin/env python3
-"""User-Item interaction data management for recommendation systems."""
+"""User-Item interaction data management."""
 
-import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import List, Optional, Tuple, Union
 
 import joblib
 import numpy as np
 import scipy.sparse as sp
-from tqdm import tqdm
 
-from .utils import split_sparse_coo_matrix, print_sparse_matrix_stats
+from .utils import print_sparse_matrix_stats
 
 
 class UserItemData:
-    """Manages user-item interaction and feature data for recommendation
-    systems.
-    """
+    """Manages user-item interaction and feature data."""
 
     def __init__(
         self,
         name: str,
         dtype: np.dtype = np.float32,
-        log_level: str = 'INFO'
+        verbose: bool = True
     ) -> None:
-        """Initialize UserItemData object with dynamic dimensions.
-
-        Args:
-            name: Dataset name identifier
-            dtype: Data type for sparse matrices
-            log_level: Logging level ('DEBUG', 'INFO', 'WARNING', 'ERROR')
-        """
+        """Initialize UserItemData with dynamic dimensions."""
         # Validate inputs
         if not name or not isinstance(name, str):
             raise ValueError("Name must be a non-empty string")
 
-        if not isinstance(dtype, type) or not issubclass(dtype, np.floating):
-            raise ValueError("dtype must be a numpy floating point type")
+        if (not isinstance(dtype, type) or
+                not issubclass(dtype, np.floating)):
+            raise ValueError(
+                "dtype must be a numpy floating point type"
+            )
 
         self.name = name
         self.dtype = dtype
+        self.verbose = verbose
 
-        # Setup logging
-        self.logger = logging.getLogger(f"{self.__class__.__name__}.{name}")
-        self.logger.setLevel(getattr(logging, log_level.upper()))
-
-        # Add console handler if none exists
-        if not self.logger.handlers:
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter(
-                '%(name)s - %(levelname)s - %(message)s'
-            )
-            handler.setFormatter(formatter)
-            self.logger.addHandler(handler)
-
-        # Initialize dimensions to zero - will be updated dynamically
+        # Initialize dimensions
         self.n_users = 0
         self.n_items = 0
         self.n_user_features = 0
@@ -63,10 +44,6 @@ class UserItemData:
         # Initialize empty matrices
         self._Rpos = sp.coo_matrix((0, 0), dtype=dtype)
         self._Rneg = sp.coo_matrix((0, 0), dtype=dtype)
-        self._Rpos_train = None
-        self._Rpos_test = None
-        self._Rneg_train = None
-        self._Rneg_test = None
         self._Fu = sp.coo_matrix((0, 0), dtype=dtype)
         self._Fi = sp.coo_matrix((0, 0), dtype=dtype)
 
@@ -78,8 +55,9 @@ class UserItemData:
             'item_feature': (dict(), dict())
         }
 
-        self.logger.info(
-            f"Initialized UserItemData '{name}' with dtype {dtype}")
+        if self.verbose:
+            print(f"Initialized UserItemData '{name}' "
+                  f"with dtype {dtype}")
 
     # def __repr__(self) -> str:
     #     """Return string representation of the dataset.
@@ -142,9 +120,6 @@ class UserItemData:
             elif mapping_type == 'item_feature':
                 self.n_item_features = max(self.n_item_features, idx + 1)
 
-            self.logger.debug(
-                f"New {mapping_type} ID {input_id} -> index {idx}"
-            )
 
         return id_to_idx[input_id]
 
@@ -271,7 +246,6 @@ class UserItemData:
 
     def _reshape_all_matrices(self) -> None:
         """Reshape all matrices according to current dimensions."""
-        self.logger.debug("Reshaping all matrices to current dimensions")
 
         # Update interaction matrices
         self._Rpos = self._update_matrix(
@@ -288,17 +262,6 @@ class UserItemData:
         self._Fu = self._update_matrix(
             self._Fu, (self.n_users, self.n_user_features)
         )
-
-        # Clear train/test split if it exists
-        if self._Rpos_test is not None:
-            self._Rpos_train = None
-            self._Rpos_test = None
-            self._Rneg_train = None
-            self._Rneg_test = None
-            self.logger.warning(
-                'Train/test split cleared due to new data. '
-                'Please rerun train_test_split!'
-            )
 
     def add_interactions(
         self,
@@ -322,13 +285,14 @@ class UserItemData:
             )
 
         if len(user_ids) == 0:
-            self.logger.debug("No interactions to add")
             return
 
         interaction_type = "positive" if is_positive else "negative"
-        self.logger.info(
-            f"Adding {len(user_ids):,} {interaction_type} interactions"
-        )
+        if self.verbose:
+            print(
+                f"Adding {len(user_ids):,} {interaction_type} "
+                f"interactions"
+            )
 
         # Convert IDs to indices
         user_indices = self._get_indices(user_ids, 'user')
@@ -360,10 +324,12 @@ class UserItemData:
         # Reshape matrices if needed
         self._reshape_all_matrices()
 
-        self.logger.info(
-            f"Successfully added {interaction_type} interactions. "
-            f"New dimensions: {self.n_users} users × {self.n_items} items"
-        )
+        if self.verbose:
+            print(
+                f"Successfully added {interaction_type} interactions. "
+                f"New dimensions: {self.n_users} users × "
+                f"{self.n_items} items"
+            )
 
     def add_positive_interactions(
         self,
@@ -415,10 +381,10 @@ class UserItemData:
             )
 
         if len(user_ids) == 0:
-            self.logger.debug("No user features to add")
             return
 
-        self.logger.info(f"Adding {len(user_ids):,} user features")
+        if self.verbose:
+            print(f"Adding {len(user_ids):,} user features")
 
         # Convert IDs to indices
         user_indices = self._get_indices(user_ids, 'user')
@@ -439,13 +405,13 @@ class UserItemData:
             new_matrix=feature_matrix,
             new_shape=(self.n_users, self.n_user_features)
         )
-        self.logger.info("Successfully added user features")
         self._reshape_all_matrices()
 
-        self.logger.info(
-            f"{self.n_users} users × "
-            f"{self.n_user_features} user features"
-        )
+        if self.verbose:
+            print(
+                f"Added user features: {self.n_users} users × "
+                f"{self.n_user_features} features"
+            )
 
     def add_item_features(
         self,
@@ -467,10 +433,10 @@ class UserItemData:
             )
 
         if len(item_ids) == 0:
-            self.logger.debug("No item features to add")
             return
 
-        self.logger.info(f"Adding {len(item_ids):,} item features")
+        if self.verbose:
+            print(f"Adding {len(item_ids):,} item features")
 
         # Convert IDs to indices
         item_indices = self._get_indices(item_ids, 'item')
@@ -491,30 +457,22 @@ class UserItemData:
             new_matrix=feature_matrix,
             new_shape=(self.n_items, self.n_item_features)
         )
-        self.logger.info("Successfully added item features")
         self._reshape_all_matrices()
 
-        self.logger.info(
-            f"New dimensions: {self.n_items} items × "
-            f"{self.n_item_features} item features"
-        )
+        if self.verbose:
+            print(
+                f"Added item features: {self.n_items} items × "
+                f"{self.n_item_features} features"
+            )
 
     def validate_dataset(self) -> None:
-        """Validate the entire dataset.
-
-        Raises:
-            ValueError: If validation fails
-        """
-        self.logger.info("Validating dataset...")
+        """Validate the entire dataset."""
+        if self.verbose:
+            print("Validating dataset...")
 
         # Check for required data
         if self.Rpos.nnz == 0:
             raise ValueError("No positive interaction data found")
-
-        if self._Rpos_train is None:
-            raise ValueError(
-                "Train-test split not performed. Call train_test_split() first"
-            )
 
         # Check matrix dimensions consistency
         matrices_to_check = [
@@ -536,128 +494,46 @@ class UserItemData:
             users_with_features = set(self._Fu.row)
             if len(users_with_features) < self.n_users:
                 missing_users = self.n_users - len(users_with_features)
-                self.logger.warning(
+                print("WARNING:", 
                     f"{missing_users}/{self.n_users} users have no features"
                 )
         else:
-            self.logger.warning("No user features found")
+            print("WARNING:", "No user features found")
 
         if self._Fi.nnz > 0:
             items_with_features = set(self._Fi.row)
             if len(items_with_features) < self.n_items:
                 missing_items = self.n_items - len(items_with_features)
-                self.logger.warning(
+                print("WARNING:", 
                     f"{missing_items}/{self.n_items} items have no features"
                 )
         else:
-            self.logger.warning("No item features found")
+            print("WARNING: No item features found")
 
-        self.logger.info("Dataset validation completed successfully")
-
-    def train_test_split(
-        self,
-        train_ratio_pos: float,
-        train_ratio_neg: Optional[float] = None,
-        random_state: Optional[int] = None,
-        show_progress: bool = True
-    ) -> None:
-        """Split positive and negative interactions into train/test sets.
-
-        Args:
-            train_ratio_pos: Training ratio for positive interactions (0-1)
-            train_ratio_neg: Training ratio for negative interactions
-                           (uses train_ratio_pos if None)
-            random_state: Random seed for reproducibility
-            show_progress: Whether to show progress bars
-        """
-        # Validate inputs
-        if not 0 < train_ratio_pos < 1:
-            raise ValueError(
-                f"train_ratio_pos must be between 0 and 1, "
-                f"got {train_ratio_pos}"
-            )
-
-        if train_ratio_neg is None:
-            train_ratio_neg = train_ratio_pos
-        elif not 0 < train_ratio_neg < 1:
-            raise ValueError(
-                f"train_ratio_neg must be between 0 and 1, "
-                f"got {train_ratio_neg}"
-            )
-
-        self.logger.info(
-            f"Splitting interactions: train_pos={train_ratio_pos:.2f}, "
-            f"train_neg={train_ratio_neg:.2f}, "
-            f"random_state={random_state}"
-        )
-
-        # Split positive interactions
-        if self.Rpos.nnz == 0:
-            raise ValueError("No positive interactions to split")
-
-        self._Rpos_train, self._Rpos_test = split_sparse_coo_matrix(
-            self.Rpos,
-            train_ratio_pos,
-            random_state,
-            show_progress
-        )
-
-        # Split negative interactions if they exist
-        if self.Rneg.nnz > 0:
-            self._Rneg_train, self._Rneg_test = split_sparse_coo_matrix(
-                self.Rneg,
-                train_ratio_neg,
-                random_state,
-                show_progress
-            )
-            self.logger.info(
-                f"Split {self.Rneg.nnz:,} negative interactions"
-            )
-        else:
-            # Create empty matrices with correct shape
-            shape = (self.n_users, self.n_items)
-            self._Rneg_train = sp.coo_matrix(shape, dtype=self.dtype)
-            self._Rneg_test = sp.coo_matrix(shape, dtype=self.dtype)
-            self.logger.info("No negative interactions to split")
-
-        self.logger.info(
-            f"Train/test split completed. "
-            f"Pos train: {self._Rpos_train.nnz:,}, "
-            f"Pos test: {self._Rpos_test.nnz:,}"
-        )
+        if self.verbose:
+            print("Dataset validation completed successfully")
 
     def save(self, filepath: Union[str, Path]) -> None:
-        """Save instance to file using joblib.
-
-        Args:
-            filepath: Path to save the instance
-        """
+        """Save instance to file using joblib."""
         filepath = Path(filepath)
-        self.logger.info(f"Saving dataset to {filepath}")
+        if self.verbose:
+            print(f"Saving dataset to {filepath}")
 
         try:
             # Create parent directory if it doesn't exist
             filepath.parent.mkdir(parents=True, exist_ok=True)
 
             joblib.dump(self, filepath, compress=3)
-            file_size = filepath.stat().st_size / (1024 * 1024)  # MB
-            self.logger.info(
-                f"Dataset saved successfully ({file_size:.1f} MB)"
-            )
+            file_size = filepath.stat().st_size / (1024 * 1024)
+            if self.verbose:
+                print(f"Saved ({file_size:.1f} MB)")
         except Exception as e:
-            self.logger.error(f"Failed to save dataset: {e}")
+            print(f"ERROR: Failed to save dataset: {e}")
             raise IOError(f"Failed to save dataset: {e}")
 
     @classmethod
     def load(cls, filepath: Union[str, Path]) -> 'UserItemData':
-        """Load instance from file.
-
-        Args:
-            filepath: Path to load the instance from
-
-        Returns:
-            Loaded UserItemData instance
-        """
+        """Load instance from file."""
         filepath = Path(filepath)
 
         if not filepath.exists():
@@ -672,28 +548,20 @@ class UserItemData:
                     f"got {type(instance).__name__}"
                 )
 
-            # Ensure logger is properly configured for loaded instance
-            if not hasattr(instance, 'logger') or not instance.logger.handlers:
-                instance.logger = logging.getLogger(
-                    f"{cls.__name__}.{instance.name}"
-                )
-                handler = logging.StreamHandler()
-                formatter = logging.Formatter(
-                    '%(name)s - %(levelname)s - %(message)s'
-                )
-                handler.setFormatter(formatter)
-                instance.logger.addHandler(handler)
+            # Ensure verbose attribute exists
+            if not hasattr(instance, 'verbose'):
+                instance.verbose = True
 
-            file_size = filepath.stat().st_size / (1024 * 1024)  # MB
-            instance.logger.info(
-                f"Dataset loaded successfully from {filepath} ({file_size:.1f} MB)"
-            )
+            file_size = filepath.stat().st_size / (1024 * 1024)
+            if instance.verbose:
+                print(
+                    f"Loaded dataset from {filepath} "
+                    f"({file_size:.1f} MB)"
+                )
             return instance
 
         except Exception as e:
-            # Use class-level logger for load errors
-            logger = logging.getLogger(cls.__name__)
-            logger.error(f"Failed to load dataset from {filepath}: {e}")
+            print(f"ERROR: Failed to load dataset from {filepath}: {e}")
             raise IOError(f"Failed to load dataset: {e}")
 
     def _get_interaction_stats(
@@ -763,40 +631,6 @@ class UserItemData:
         if rneg_stats:
             istr += f"    └─ {rneg_stats}\n"
 
-        # Add train/test split statistics
-        if self.Rpos_train is not None:
-            istr += (
-                f"  {'Rpos_train':10}:"
-                f"{print_sparse_matrix_stats(self.Rpos_train)}\n"
-            )
-            rpos_train_stats = self._get_interaction_stats(self.Rpos_train)
-            if rpos_train_stats:
-                istr += f"    └─ {rpos_train_stats}\n"
-
-            istr += (
-                f"  {'Rpos_test':10}:"
-                f"{print_sparse_matrix_stats(self.Rpos_test)}\n"
-            )
-            rpos_test_stats = self._get_interaction_stats(self.Rpos_test)
-            if rpos_test_stats:
-                istr += f"    └─ {rpos_test_stats}\n"
-
-            istr += (
-                f"  {'Rneg_train':10}:"
-                f"{print_sparse_matrix_stats(self.Rneg_train)}\n"
-            )
-            rneg_train_stats = self._get_interaction_stats(self.Rneg_train)
-            if rneg_train_stats:
-                istr += f"    └─ {rneg_train_stats}\n"
-
-            istr += (
-                f"  {'Rneg_test':10}:"
-                f"{print_sparse_matrix_stats(self.Rneg_test)}"
-            )
-            rneg_test_stats = self._get_interaction_stats(self.Rneg_test)
-            if rneg_test_stats:
-                istr += f"\n    └─ {rneg_test_stats}"
-
         return istr
     
     @property
@@ -819,72 +653,20 @@ class UserItemData:
 
     @property
     def Rpos(self) -> sp.coo_matrix:
-        """Get positive interactions matrix.
-
-        Returns:
-            Sparse matrix of positive interactions
-        """
+        """Get positive interactions matrix."""
         return self._Rpos
 
     @property
-    def Rpos_train(self) -> Optional[sp.coo_matrix]:
-        """Get training positive interactions matrix.
-
-        Returns:
-            Sparse matrix of training positive interactions
-        """
-        return self._Rpos_train
-
-    @property
-    def Rpos_test(self) -> Optional[sp.coo_matrix]:
-        """Get testing positive interactions matrix.
-
-        Returns:
-            Sparse matrix of testing positive interactions
-        """
-        return self._Rpos_test
-
-    @property
     def Rneg(self) -> sp.coo_matrix:
-        """Get negative interactions matrix.
-
-        Returns:
-            Sparse matrix of negative interactions
-        """
+        """Get negative interactions matrix."""
         return self._Rneg
 
     @property
-    def Rneg_train(self) -> Optional[sp.coo_matrix]:
-        """Get training negative interactions matrix.
-
-        Returns:
-            Sparse matrix of training negative interactions
-        """
-        return self._Rneg_train
-
-    @property
-    def Rneg_test(self) -> Optional[sp.coo_matrix]:
-        """Get testing negative interactions matrix.
-
-        Returns:
-            Sparse matrix of testing negative interactions
-        """
-        return self._Rneg_test
-
-    @property
     def Fu(self) -> sp.coo_matrix:
-        """Get user features matrix.
-
-        Returns:
-            Sparse matrix of user features
-        """
+        """Get user features matrix."""
         return self._Fu
 
     @property
     def Fi(self) -> sp.coo_matrix:
-        """Get item features matrix.
-
-        Returns:
-            Sparse matrix of item features
-        """
+        """Get item features matrix."""
         return self._Fi

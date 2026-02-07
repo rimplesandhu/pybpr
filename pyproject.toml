@@ -3,7 +3,7 @@ name = "pybpr"
 version = "0.0.1"
 description = "Suite of Bayesian algorithms"
 readme = "README.rst"
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 license = {text = "BSD 3-Clause License"}
 authors = [
     {name = "Rimple Sandhu", email = "rimple.sandhu@nrel.gov"}
@@ -30,8 +30,7 @@ dependencies = [
     "torch",
     "pyarrow",
     "hero",
-    "hero-mlflow",
-    "pytest>=9.0.2",
+    "mlflow",
 ]
 
 [build-system]
@@ -48,7 +47,12 @@ exclude = ["tests*", ".gitignore"]
 hero-mlflow = { git = "https://github.nrel.gov/Hero/hero-mlflow", tag = "v3.0.1" }
 hero = { git = "https://github.nrel.gov/Hero/hero", tag = "v0.9.9" }
 
+[tool.uv]
+link-mode = "copy"
+
 [dependency-groups]
 dev = [
     "ipykernel>=7.1.0",
+    "pytest>=9.0.2",
+    "hero-mlflow",
 ]
