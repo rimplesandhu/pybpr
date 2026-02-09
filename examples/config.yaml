@@ -35,7 +35,7 @@ data:
 
 # MLflow
 mlflow:
-  experiment_name: 'movielens_pipeline'  # Experiment name
+  experiment_name: 'movielens'  # Experiment name
   tracking_uri: 'sqlite:///mlflow.db'    # Tracking URI
 
 # Parameter sweep configuration (basic)

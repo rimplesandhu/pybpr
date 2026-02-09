@@ -119,14 +119,33 @@ class TrainingPipeline:
         )
 
     def run(
-        self, ui: UserItemData, sweep: bool = False
+        self,
+        ui: UserItemData,
+        sweep: bool = False,
+        custom_mlflow: Optional[Any] = None
     ) -> List[str]:
-        """Run training with optional sweep."""
-        # Set MLflow tracking and experiment
-        mlflow.set_tracking_uri(self.cfg['mlflow.tracking_uri'])
-        mlflow.set_experiment(
-            self.cfg['mlflow.experiment_name']
-        )
+        """Run training with optional sweep.
+
+        Args:
+            ui: UserItemData object with interaction data
+            sweep: Whether to run parameter sweep
+            custom_mlflow: Optional custom mlflow object (e.g., from hero-mlflow).
+                          If provided, this will be used instead of the default mlflow.
+        """
+        # Use custom mlflow if provided, otherwise use default
+        mlflow_module = custom_mlflow if custom_mlflow is not None else mlflow
+
+        # Set MLflow tracking and experiment only if custom mlflow not supplied
+        if custom_mlflow is None:
+            mlflow_module.set_tracking_uri(self.cfg['mlflow.tracking_uri'])
+            mlflow_module.set_experiment(
+                self.cfg['mlflow.experiment_name']
+            )
+        else:
+            # For custom mlflow, only set experiment
+            mlflow_module.set_experiment(
+                self.cfg['mlflow.experiment_name']
+            )
 
         # Run sweep or single training
         if sweep:
@@ -141,7 +160,8 @@ class TrainingPipeline:
                 mlflow_experiment_name=self.cfg.get(
                     'mlflow.experiment_name'
                 ),
-                base_run_name=ui.name
+                base_run_name=ui.name,
+                custom_mlflow=custom_mlflow
             )
             print(
                 f"\nSweep completed: {len(results)} experiments"
@@ -149,8 +169,8 @@ class TrainingPipeline:
             return results
         else:
             print("\nTraining single model...")
-            with mlflow.start_run(run_name=ui.name) as run:
-                self.train(ui, mlflow_run=run)
+            with mlflow_module.start_run(run_name=ui.name) as run:
+                self.train(ui, mlflow_run=run, custom_mlflow=custom_mlflow)
                 print("\nTraining completed!")
                 print(f"MLflow run ID: {run.info.run_id}")
                 return [run.info.run_id]
@@ -159,15 +179,27 @@ class TrainingPipeline:
         self,
         ui: UserItemData,
         mlflow_run: Run,
-        run_name: Optional[str] = None
+        run_name: Optional[str] = None,
+        custom_mlflow: Optional[Any] = None
     ) -> RecommendationSystem:
-        """Train a single model using pipeline config."""
+        """Train a single model using pipeline config.
+
+        Args:
+            ui: UserItemData object with interaction data
+            mlflow_run: MLflow run object
+            run_name: Optional name for the training run
+            custom_mlflow: Optional custom mlflow object (e.g., from hero-mlflow).
+                          If provided, this will be used instead of the default mlflow.
+        """
+        # Use custom mlflow if provided, otherwise use default
+        mlflow_module = custom_mlflow if custom_mlflow is not None else mlflow
+
         # Determine run name
         if run_name is None:
             run_name = ui.name
 
         # Log all config parameters to MLflow
-        mlflow.log_params(self.cfg)
+        mlflow_module.log_params(self.cfg)
 
         # Get loss function
         loss_name = self.cfg['training.loss_function']
@@ -230,9 +262,23 @@ class TrainingPipeline:
         param_grid: Dict[str, List],
         mlflow_experiment_name: Optional[str] = None,
         base_run_name: Optional[str] = None,
-        num_processes: Optional[int] = None
+        num_processes: Optional[int] = None,
+        custom_mlflow: Optional[Any] = None
     ) -> List[str]:
-        """Run hyperparameter grid search with param combinations."""
+        """Run hyperparameter grid search with param combinations.
+
+        Args:
+            ui: UserItemData object with interaction data
+            param_grid: Dictionary of parameters to search over
+            mlflow_experiment_name: Optional MLflow experiment name
+            base_run_name: Base name for runs
+            num_processes: Number of parallel processes
+            custom_mlflow: Optional custom mlflow object (e.g., from hero-mlflow).
+                          If provided, this will be used instead of the default mlflow.
+        """
+        # Use custom mlflow if provided, otherwise use default
+        mlflow_module = custom_mlflow if custom_mlflow is not None else mlflow
+
         # Validate param grid
         if not param_grid:
             raise ValueError(
@@ -242,7 +288,7 @@ class TrainingPipeline:
 
         # Set MLflow experiment
         if mlflow_experiment_name:
-            mlflow.set_experiment(mlflow_experiment_name)
+            mlflow_module.set_experiment(mlflow_experiment_name)
 
         # Generate all parameter combinations
         all_params = self._generate_param_combinations(param_grid)
@@ -274,7 +320,8 @@ class TrainingPipeline:
         run_single = partial(
             self._run_single_experiment,
             ui=ui,
-            base_run_name=base_run_name or ui.name
+            base_run_name=base_run_name or ui.name,
+            custom_mlflow=custom_mlflow
         )
 
         # Run experiments in parallel with progress tracking
@@ -323,9 +370,21 @@ class TrainingPipeline:
         self,
         params: Dict[str, Any],
         ui: UserItemData,
-        base_run_name: str
+        base_run_name: str,
+        custom_mlflow: Optional[Any] = None
     ) -> str:
-        """Run a single experiment with given parameters."""
+        """Run a single experiment with given parameters.
+
+        Args:
+            params: Parameter dictionary for this experiment
+            ui: UserItemData object with interaction data
+            base_run_name: Base name for the run
+            custom_mlflow: Optional custom mlflow object (e.g., from hero-mlflow).
+                          If provided, this will be used instead of the default mlflow.
+        """
+        # Use custom mlflow if provided, otherwise use default
+        mlflow_module = custom_mlflow if custom_mlflow is not None else mlflow
+
         run_name = "unknown"
         try:
             # Create copy of config for this experiment
@@ -361,10 +420,11 @@ class TrainingPipeline:
             )
 
             # Start MLflow run for this experiment
-            with mlflow.start_run(run_name=run_name) as run:
+            with mlflow_module.start_run(run_name=run_name) as run:
                 # Train model with MLflow run
                 experiment_pipeline.train(
-                    ui=ui, mlflow_run=run, run_name=run_name
+                    ui=ui, mlflow_run=run, run_name=run_name,
+                    custom_mlflow=custom_mlflow
                 )
 
             return f"SUCCESS: {run_name}"

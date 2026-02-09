@@ -24,13 +24,12 @@ dependencies = [
     "numpy",
     "scipy",
     "pandas",
-    "pathos",
     "tqdm",
     "scikit-learn",
     "torch",
-    "pyarrow",
-    "hero",
     "mlflow",
+    "joblib",
+    "pyyaml",
 ]
 
 [build-system]
@@ -54,5 +53,6 @@ link-mode = "copy"
 dev = [
     "ipykernel>=7.1.0",
     "pytest>=9.0.2",
+    "hero",
     "hero-mlflow",
 ]
