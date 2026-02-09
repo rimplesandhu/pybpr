@@ -280,12 +280,19 @@ class RecommendationSystem:
         early_stopping_patience: int = 10
     ) -> None:
         """Train the model using BPR optimization."""
+        # Detect if running in subprocess (grid search)
+        import multiprocessing as mp
+        is_subprocess = (
+            mp.current_process().name != 'MainProcess'
+        )
+        num_workers = 0 if is_subprocess else 2
+
         # Prepare dataloader
         dataloader = DataLoader(
             TensorDataset(torch.LongTensor(self.users)),
             batch_size=batch_size,
             shuffle=True,
-            num_workers=2
+            num_workers=num_workers
         )
         print(f'# of minibatches = {len(dataloader):,}')
         print(f'Eval frequency = {eval_every} epochs')
@@ -303,6 +310,7 @@ class RecommendationSystem:
 
         # Early stopping setup
         best_test_auc = 0.0
+        best_epoch = 0
         patience_counter = 0
 
         # Progress tracking setup
@@ -311,6 +319,8 @@ class RecommendationSystem:
             total=n_iter,
             file=sys.stdout,
             desc='HybBPR',
+            ncols=70,
+            unit='ep'
         )
 
         # Training loop
@@ -345,13 +355,11 @@ class RecommendationSystem:
                     eval_metrics, step=epoch
                 )
 
-                # Save best model
+                # Track best model
                 if current_auc > best_test_auc:
                     best_test_auc = current_auc
+                    best_epoch = epoch
                     patience_counter = 0
-                    self.save_model(
-                        name=f"model_epoch_{epoch}"
-                    )
                 else:
                     patience_counter += 1
 
@@ -364,26 +372,37 @@ class RecommendationSystem:
                     )
                     break
 
-                # Debug logging
-                print(
-                    f"Eval@{epoch}: "
-                    f"AUC (train/test): "
-                    f"{eval_metrics.get('train_auc', 0):.3f}"
-                    f"/"
-                    f"{eval_metrics.get('test_auc', 0):.3f}"
-                    f", Loss (train/test): "
-                    f"{eval_metrics.get('train_loss', 0):.3f}"
-                    f"/"
-                    f"{eval_metrics.get('test_loss', 0):.3f}"
+                # Update progress bar with eval metrics
+                epoch_looper.write(
+                    f"E{epoch}: "
+                    f"AUC {eval_metrics.get('train_auc',0):.3f}/"
+                    f"{eval_metrics.get('test_auc',0):.3f} | "
+                    f"Loss {eval_metrics.get('train_loss',0):.3f}/"
+                    f"{eval_metrics.get('test_loss',0):.3f}"
                 )
 
-    def save_model(self, name: str = "model") -> None:
+        # Save best model after training completes
+        if best_epoch > 0:
+            self.save_model(
+                name=f"best_model_epoch_{best_epoch}",
+                tqdm_obj=None
+            )
+
+    def save_model(
+        self,
+        name: str = "model",
+        tqdm_obj=None
+    ) -> None:
         """Save model to MLflow."""
         try:
             mlflow.pytorch.log_model(
                 pytorch_model=self.model, name=name
             )
-            print(f"Logged model to MLflow: {name}")
+            msg = f"Logged model to MLflow: {name}"
+            if tqdm_obj:
+                tqdm_obj.write(msg)
+            else:
+                print(msg)
         except Exception as e:
             err_msg = (
                 f"Failed to save model: {str(e)}"

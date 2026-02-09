@@ -607,30 +607,18 @@ class UserItemData:
         return stats
 
     def __repr__(self) -> str:
-        """Return string representation of the dataset.
-
-        Returns:
-            Formatted string with dataset statistics
-        """
-        istr = (
-            f"{self.__class__.__name__}({self.name})\n"
-            f"  {'Fuser':10}:{print_sparse_matrix_stats(self.Fu)}\n"
-            f"  {'Fitem':10}:{print_sparse_matrix_stats(self.Fi)}\n"
-            f"  {'Rpos':10}:{print_sparse_matrix_stats(self.Rpos)}\n"
-        )
-
-        # Add Rpos interaction statistics
+        """Return string representation of the dataset."""
+        istr = f"{self.__class__.__name__}({self.name})\n"
+        istr += f"  Fuser: {print_sparse_matrix_stats(self.Fu)}\n"
+        istr += f"  Fitem: {print_sparse_matrix_stats(self.Fi)}\n"
+        istr += f"  Rpos:  {print_sparse_matrix_stats(self.Rpos)}\n"
         rpos_stats = self._get_interaction_stats(self.Rpos)
         if rpos_stats:
-            istr += f"    └─ {rpos_stats}\n"
-
-        istr += f"  {'Rneg':10}:{print_sparse_matrix_stats(self.Rneg)}\n"
-
-        # Add Rneg interaction statistics
+            istr += f"         └─ {rpos_stats}\n"
+        istr += f"  Rneg:  {print_sparse_matrix_stats(self.Rneg)}"
         rneg_stats = self._get_interaction_stats(self.Rneg)
         if rneg_stats:
-            istr += f"    └─ {rneg_stats}\n"
-
+            istr += f"\n         └─ {rneg_stats}"
         return istr
     
     @property

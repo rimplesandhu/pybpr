@@ -434,10 +434,9 @@ def print_sparse_matrix_stats(matrix: sparse.coo_matrix) -> str:
     """Print compact stats about a sparse matrix in a single line."""
     stats = get_sparse_matrix_stats(matrix)
     print_str = (
-        f"({stats['shape'][0]:6}×{stats['shape'][1]:6}) "
-        f"nnz={stats['nnz']:10,} ({stats['density']:5.3%}), "
-        f"empty rows/cols={stats['empty_rows']:6}/"
-        f"{stats['empty_cols']:6}"
+        f"({stats['shape'][0]:5}×{stats['shape'][1]:5}) "
+        f"nnz={stats['nnz']:9,} ({stats['density']:5.3%}),"
+        f"empty={stats['empty_rows']:5}/{stats['empty_cols']:5}"
     )
     return print_str
 

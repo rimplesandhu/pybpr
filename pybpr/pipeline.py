@@ -3,6 +3,7 @@
 import yaml
 import torch
 import itertools
+import logging
 import multiprocessing as mp
 from functools import partial
 from typing import Dict, List, Any, Optional, Callable
@@ -14,6 +15,11 @@ from .recommender import RecommendationSystem
 from .interaction_data import UserItemData
 from .matrix_factorization import HybridMF
 from .losses import bpr_loss, hinge_loss, bpr_loss_v2, warp_loss
+
+# Suppress verbose MLflow/alembic migration logs
+logging.getLogger("alembic").setLevel(logging.WARNING)
+logging.getLogger("mlflow").setLevel(logging.WARNING)
+logging.getLogger("mlflow.utils.environment").setLevel(logging.ERROR)
 
 
 class TrainingPipeline:
@@ -65,7 +71,6 @@ class TrainingPipeline:
             else:
                 flat[section] = values
         return flat
-
 
     def get_loss_function(self, loss_name: str) -> Callable:
         """Get loss function by name."""
@@ -239,28 +244,31 @@ class TrainingPipeline:
         if mlflow_experiment_name:
             mlflow.set_experiment(mlflow_experiment_name)
 
-        # Configure multiprocessing
-        if num_processes is None:
-            num_processes = self.cfg['multiprocessing.num_processes']
-            torch_num_threads = self.cfg[
-                'multiprocessing.torch_num_threads'
-            ]
-        else:
-            torch_num_threads = 1
-
-        # Set PyTorch threads
-        torch.set_num_threads(torch_num_threads)
-
         # Generate all parameter combinations
         all_params = self._generate_param_combinations(param_grid)
         print(f"Running {len(all_params)} experiments in grid search")
 
-        # Determine number of processes
+        # Auto-configure multiprocessing for optimal performance
+        total_cores = mp.cpu_count()
+
+        # Determine number of parallel processes
         if num_processes is None:
-            num_processes = min(len(all_params), mp.cpu_count())
+            # Auto: use all cores, limited by number of experiments
+            num_processes = min(len(all_params), total_cores)
         else:
             num_processes = min(len(all_params), num_processes)
-        print(f"Using {num_processes} parallel processes")
+
+        # Auto-calculate PyTorch threads to avoid oversubscription
+        torch_num_threads = max(1, total_cores // num_processes)
+
+        # Set PyTorch threads
+        torch.set_num_threads(torch_num_threads)
+
+        print(
+            f"Using {num_processes} processes × "
+            f"{torch_num_threads} PyTorch threads "
+            f"({total_cores} cores available)"
+        )
 
         # Create partial function with fixed ui
         run_single = partial(
@@ -269,14 +277,28 @@ class TrainingPipeline:
             base_run_name=base_run_name or ui.name
         )
 
-        # Run experiments in parallel
+        # Run experiments in parallel with progress tracking
+        print("Starting experiments...", flush=True)
         with mp.Pool(processes=num_processes) as pool:
-            results = pool.map(run_single, all_params)
+            # Use imap_unordered for progress tracking
+            results = []
+            for i, result in enumerate(
+                pool.imap_unordered(run_single, all_params), 1
+            ):
+                results.append(result)
+                print(
+                    f"[{i}/{len(all_params)}] {result}",
+                    flush=True
+                )
 
         # Print summary
-        print("\nGrid Search Results:")
-        for result in results:
-            print(f"- {result}")
+        print("\nGrid Search Complete!")
+        success_count = sum(
+            1 for r in results if r.startswith("SUCCESS")
+        )
+        print(
+            f"Success: {success_count}/{len(results)} experiments"
+        )
 
         return results
 
@@ -304,6 +326,7 @@ class TrainingPipeline:
         base_run_name: str
     ) -> str:
         """Run a single experiment with given parameters."""
+        run_name = "unknown"
         try:
             # Create copy of config for this experiment
             experiment_config = self.cfg_raw.copy()
@@ -347,10 +370,14 @@ class TrainingPipeline:
             return f"SUCCESS: {run_name}"
 
         except Exception as e:
-            return (
-                f"FAILED: {base_run_name} with "
-                f"params {params}: {str(e)}"
+            import traceback
+            error_msg = (
+                f"FAILED: {run_name}\n"
+                f"  Params: {params}\n"
+                f"  Error: {str(e)}\n"
+                f"  {traceback.format_exc()}"
             )
+            return error_msg
 
     @staticmethod
     def create_default_config() -> Dict:
@@ -393,10 +420,6 @@ class TrainingPipeline:
             },
             'output': {
                 'output_dir': './output'
-            },
-            'multiprocessing': {
-                'num_processes': None,
-                'torch_num_threads': 1
             },
             'grid_search': {
                 'enabled': False,

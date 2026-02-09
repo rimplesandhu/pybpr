@@ -309,7 +309,6 @@ class MovieLensDownloader:
                             unique_count = df[col].nunique()
                             print(f"Unique {col}: {unique_count:,}")
 
-
     def load_and_preprocess(
         self,
         dataset: str = 'ml-100k'
