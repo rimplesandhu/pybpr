@@ -109,7 +109,7 @@ def main():
     data = load_movielens(dataset='ml-100k', preprocess=True)
 
     # MovieLens-specific rating threshold for positive interactions
-    rating_threshold = 3.5
+    rating_threshold = 3.0
 
     # Build UserItemData object
     print("\nBuilding UserItemData...")
@@ -121,7 +121,35 @@ def main():
     )
 
     # Run training or sweep
-    pipeline.run(ui, sweep=args.sweep)
+    run_ids = pipeline.run(ui, sweep=args.sweep)
+
+    # Plot single run and save to figs/
+    if not args.sweep and run_ids:
+        import os
+        import matplotlib.pyplot as plt
+        from pybpr.plotter import MLflowPlotter
+
+        # Create figs directory if it doesn't exist
+        os.makedirs('figs', exist_ok=True)
+
+        # Initialize plotter
+        plotter = MLflowPlotter(
+            tracking_uri=pipeline.cfg['mlflow.tracking_uri']
+        )
+
+        # Plot the single run
+        fig = plotter.plot_single_run(
+            run_id=run_ids[0],
+            figsize=(14, 5),
+            std_width=2.0,
+            show_std=True
+        )
+
+        # Save the plot with run_id in filename
+        save_path = f'figs/single_run_{run_ids[0]}.png'
+        fig.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"\nPlot saved to: {save_path}")
+        plt.close(fig)
 
 
 if __name__ == '__main__':

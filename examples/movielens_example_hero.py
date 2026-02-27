@@ -32,7 +32,7 @@ def initialize_hero_mlflow():
     tracking_uri = model_registry.get_tracking_uri()
     print(f"MLflow Tracking URI: {tracking_uri}\n")
 
-    return mlflow
+    return mlflow, model_registry
 
 
 def build_user_item_data(
@@ -118,12 +118,16 @@ def main():
 
     args = parser.parse_args()
 
-    # Initialize Hero MLflow
-    hero_mlflow = initialize_hero_mlflow()
-
     # Initialize training pipeline
     print(f"Loading config: {args.config}")
     pipeline = TrainingPipeline(config_path=args.config)
+
+    # Create experiment using model_registry (Hero-specific method)
+    hero_mlflow, model_registry = initialize_hero_mlflow()
+    experiment_name = pipeline.cfg.get('mlflow.experiment_name')
+    print(f"Creating/getting experiment: {experiment_name}")
+    experiment = model_registry.read_or_create_experiment(experiment_name)
+    print(f"Experiment ID: {experiment.experiment_id}\n")
 
     # Load data using simple function
     print("Loading MovieLens 100K data...")

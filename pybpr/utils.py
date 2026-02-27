@@ -14,6 +14,11 @@ from sklearn.metrics import roc_auc_score
 from tqdm import tqdm
 
 
+def get_nonempty_rows_csr(csr_mat: csr_matrix) -> np.ndarray:
+    """Get row indices with nonzero entries - O(num_users)."""
+    return np.where(np.diff(csr_mat.indptr) > 0)[0]
+
+
 def get_user_interactions(
     users: List[int],
     pos_csr_mat: csr_matrix,

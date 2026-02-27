@@ -1,157 +1,281 @@
-"""
-Negative sampling 
-Author: Rimple Sandhu
-Email: rimple.sandhu@outlook.com
-"""
+"""Negative sampling strategies."""
 
 import numpy as np
-from scipy.sparse import spmatrix
-from datetime import datetime, timedelta
-from scipy.special import expit
+from scipy.sparse import csr_matrix
+from typing import Optional, Set
 
 
-def uniform_negative_sampler(
-        iuser: int,
-        uimat: spmatrix
-):
-    """Generate tuple of (user, pos_item, neg_item)"""
-
-    # check if valid sparse matrix
-    assert isinstance(uimat, spmatrix), "Need a scipy sparse matrix!"
-    num_users, num_items = uimat.shape
-    assert iuser < num_users, "user index greater than # of users!"
-
-    # if cant find pos interations, it swtiches user
-    pos_items = uimat.indices[uimat.indptr[iuser]:uimat.indptr[iuser + 1]]
-    while len(pos_items) == 0:
-        iuser = np.random.choice(num_users)
-        pos_items = uimat.indices[uimat.indptr[iuser]:uimat.indptr[iuser + 1]]
-    pos_item = np.random.choice(pos_items)
-
-    # uniform negative sampling
-    neg_item = np.random.choice(num_items)
-    while neg_item in pos_items:
-        neg_item = np.random.choice(num_items)
-    return (pos_item, neg_item)
+def get_excluded_items(
+    user_idx: int,
+    Rpos_all_csr: csr_matrix,
+) -> Set[int]:
+    """Get items to exclude for user (all positives)."""
+    return set(Rpos_all_csr[user_idx].indices)
 
 
-def explicit_negative_sampler(
-        iuser: int,
-        pos_uimat: spmatrix,
-        neg_uimat: spmatrix
-):
-    """Generate tuple of (user, pos_item, neg_item)"""
+def sample_random_negatives(
+    n_neg: int,
+    n_items: int,
+    excluded_items: Set[int],
+) -> np.ndarray:
+    """Sample random negatives excluding specified items."""
+    # Get available items for sampling
+    all_items = set(range(n_items))
+    available = np.array(list(all_items - excluded_items))
 
-    # check if valid sparse matrix
-    assert isinstance(pos_uimat, spmatrix), "Need a scipy sparse matrix!"
-    assert isinstance(neg_uimat, spmatrix), "Need a scipy sparse matrix!"
-    assert pos_uimat.shape == neg_uimat.shape, 'Need compatible sparse mats!'
-    num_users, num_items = pos_uimat.shape
-    assert iuser < num_users, "user index greater than # of users!"
+    if len(available) == 0:
+        return np.array([], dtype=np.int32)
 
-    # sample pos interaction
-    pos_items = pos_uimat.indices[
-        pos_uimat.indptr[iuser]:pos_uimat.indptr[iuser + 1]
-    ]
-    while len(pos_items) == 0:
-        iuser = np.random.choice(num_users)
-        pos_items = pos_uimat.indices[
-            pos_uimat.indptr[iuser]:pos_uimat.indptr[iuser + 1]
-        ]
-    pos_item = np.random.choice(pos_items)
-
-    # sample negative interaction
-    neg_items = neg_uimat.indices[
-        neg_uimat.indptr[iuser]:neg_uimat.indptr[iuser + 1]
-    ]
-    if len(neg_items) == 0:
-        neg_item = np.random.choice(num_items)
-        while neg_item in pos_items:
-            neg_item = np.random.choice(num_items)
-    else:
-        neg_item = np.random.choice(neg_items)
-
-    return (pos_item, neg_item)
+    # Sample without replacement
+    n_neg = min(n_neg, len(available))
+    return np.random.choice(available, size=n_neg, replace=False)
 
 
-def time_explicit_negative_sampler(
-        iuser: int,
-        pos_uimat: spmatrix,
-        neg_uimat: spmatrix
-):
-    """Generate tuple of (user, pos_item, neg_item)"""
+def sample_popular_negatives(
+    n_neg: int,
+    n_items: int,
+    excluded_items: Set[int],
+    item_popularity: np.ndarray,
+) -> np.ndarray:
+    """Sample negatives weighted by item popularity."""
+    # Validate item_popularity length
+    if len(item_popularity) != n_items:
+        raise ValueError(
+            f"item_popularity length {len(item_popularity)} "
+            f"!= n_items {n_items}"
+        )
 
-    # check if valid sparse matrix
-    assert isinstance(pos_uimat, spmatrix), "Need a scipy sparse matrix!"
-    assert isinstance(neg_uimat, spmatrix), "Need a scipy sparse matrix!"
-    assert pos_uimat.shape == neg_uimat.shape, 'Need compatible sparse mats!'
-    num_users, num_items = pos_uimat.shape
-    assert iuser < num_users, "user index greater than # of users!"
+    # Get available items for sampling
+    all_items = set(range(n_items))
+    available = np.array(list(all_items - excluded_items))
 
-    # sample pos interaction
-    pos_items = pos_uimat.indices[
-        pos_uimat.indptr[iuser]:pos_uimat.indptr[iuser + 1]
-    ]
+    if len(available) == 0:
+        return np.array([], dtype=np.int32)
+
+    n_neg = min(n_neg, len(available))
+    pop_available = item_popularity[available]
+
+    # Fall back to uniform if no popularity info
+    if pop_available.sum() == 0:
+        return np.random.choice(
+            available, size=n_neg, replace=False
+        )
+
+    # Sample weighted by popularity
+    probs = pop_available / pop_available.sum()
+    return np.random.choice(
+        available, size=n_neg, replace=False, p=probs
+    )
+
+
+def sample_similar_negatives(
+    user_idx: int,
+    n_neg: int,
+    n_items: int,
+    excluded_items: Set[int],
+    Fi_csr: csr_matrix,
+    Rpos_train_csr: csr_matrix,
+) -> np.ndarray:
+    """Sample negatives similar to user's positive items."""
+    # Get available items for sampling
+    all_items = set(range(n_items))
+    available = np.array(list(all_items - excluded_items))
+
+    if len(available) == 0:
+        return np.array([], dtype=np.int32)
+
+    # Get user's positive items for similarity computation
+    pos_items = Rpos_train_csr[user_idx].indices
     if len(pos_items) == 0:
-        pos_valid_users = np.unique(pos_uimat.tocoo().row)
-        iuser = np.random.choice(pos_valid_users)
-        pos_items = pos_uimat.indices[
-            pos_uimat.indptr[iuser]:pos_uimat.indptr[iuser + 1]
-        ]
-    pos_wgts = pos_uimat.tocsc()[iuser, pos_items].toarray()[0, :]
-    # while len(pos_items) == 0:
-    #     iuser = np.random.choice(num_users)
-    #     pos_items = pos_uimat.indices[
-    #         pos_uimat.indptr[iuser]:pos_uimat.indptr[iuser + 1]
-    #     ]
-    pos_item = np.random.choice(pos_items, p=pos_wgts/np.sum(pos_wgts))
+        n_neg = min(n_neg, len(available))
+        return np.random.choice(
+            available, size=n_neg, replace=False
+        )
 
-    # sample negative interaction
-    neg_items = neg_uimat.indices[
-        neg_uimat.indptr[iuser]:neg_uimat.indptr[iuser + 1]
-    ]
-    if len(neg_items) == 0:
-        neg_item = np.random.choice(num_items)
-        while neg_item in pos_items:
-            neg_item = np.random.choice(num_items)
+    # Compute average features and similarity scores
+    pos_features = Fi_csr[pos_items].mean(axis=0)
+    similarities = Fi_csr.dot(pos_features.T).toarray().flatten()
+    similarities[list(excluded_items)] = -np.inf
+
+    # Sample from top similar items
+    top_k = min(n_neg * 10, len(similarities))
+    candidates = np.argpartition(similarities, -top_k)[-top_k:]
+    valid_candidates = np.intersect1d(candidates, available)
+
+    if len(valid_candidates) == 0:
+        return np.array([], dtype=np.int32)
+
+    return np.random.choice(
+        valid_candidates,
+        size=min(n_neg, len(valid_candidates)),
+        replace=False,
+    )
+
+
+def sample_model_based_negatives(
+    n_neg: int,
+    n_items: int,
+    excluded_items: Set[int],
+    scores: np.ndarray,
+) -> np.ndarray:
+    """Sample negatives with high model scores."""
+    # Validate scores length
+    if len(scores) != n_items:
+        raise ValueError(
+            f"scores length {len(scores)} != n_items {n_items}"
+        )
+
+    # Get available items for sampling
+    all_items = set(range(n_items))
+    available = np.array(list(all_items - excluded_items))
+
+    if len(available) == 0:
+        return np.array([], dtype=np.int32)
+
+    # Mask excluded items
+    scores_copy = scores.copy()
+    scores_copy[list(excluded_items)] = -np.inf
+
+    # Sample from high-scoring items
+    top_k = min(n_neg * 10, len(scores_copy))
+    candidates = np.argpartition(scores_copy, -top_k)[-top_k:]
+    valid_candidates = np.intersect1d(candidates, available)
+
+    if len(valid_candidates) == 0:
+        return np.array([], dtype=np.int32)
+
+    return np.random.choice(
+        valid_candidates,
+        size=min(n_neg, len(valid_candidates)),
+        replace=False,
+    )
+
+
+def sample_stratified_negatives(
+    n_neg: int,
+    n_items: int,
+    excluded_items: Set[int],
+    item_popularity: np.ndarray,
+    scores: np.ndarray,
+) -> np.ndarray:
+    """Sample mix of easy, medium, and hard negatives."""
+    # Validate array lengths
+    if len(item_popularity) != n_items:
+        raise ValueError(
+            f"item_popularity length {len(item_popularity)} "
+            f"!= n_items {n_items}"
+        )
+    if len(scores) != n_items:
+        raise ValueError(
+            f"scores length {len(scores)} != n_items {n_items}"
+        )
+
+    # Get available items for sampling
+    all_items = set(range(n_items))
+    available = np.array(list(all_items - excluded_items))
+
+    if len(available) == 0:
+        return np.array([], dtype=np.int32)
+
+    # Determine split: 20% easy, 30% medium, 50% hard
+    n_easy = int(0.2 * n_neg)
+    n_medium = int(0.3 * n_neg)
+    n_hard = n_neg - n_easy - n_medium
+
+    # Sample easy negatives (random)
+    easy = np.random.choice(
+        available, size=min(n_easy, len(available)), replace=False
+    )
+    available = np.setdiff1d(available, easy)
+
+    if len(available) == 0:
+        return easy
+
+    # Sample medium negatives (popular items)
+    pop_available = item_popularity[available]
+    if pop_available.sum() > 0:
+        probs = pop_available / pop_available.sum()
+        medium = np.random.choice(
+            available,
+            size=min(n_medium, len(available)),
+            replace=False,
+            p=probs,
+        )
     else:
-        neg_wgts = neg_uimat.tocsc()[iuser, neg_items].toarray()[0, :]
-        neg_item = np.random.choice(neg_items, p=neg_wgts/np.sum(neg_wgts))
+        medium = np.random.choice(
+            available,
+            size=min(n_medium, len(available)),
+            replace=False,
+        )
+    available = np.setdiff1d(available, medium)
 
-    return (pos_item, neg_item)
+    if len(available) == 0:
+        return np.concatenate([easy, medium])
+
+    # Sample hard negatives (high-scoring items)
+    scores_available = scores[available]
+    if len(scores_available) > 0:
+        top_indices = np.argsort(scores_available)[
+            -min(n_hard, len(available)):
+        ]
+        hard = available[top_indices]
+    else:
+        hard = np.array([], dtype=np.int32)
+
+    return np.concatenate([easy, medium, hard])
 
 
-def get_time_weighting_v0(
-        x: int,
-        datetime_median: datetime,
-        datetime_cutoff: datetime,
-        scaling_days: int
-) -> float:
-    scale = timedelta(days=scaling_days).total_seconds()
-    time_cutoff = datetime_cutoff.timestamp()
-    bool_cutoff = (x < time_cutoff).astype(float)
-    time_median = datetime_median.timestamp()
-    return np.multiply(expit((x-time_median)/scale), bool_cutoff)
+def sample_negatives(
+    user_idx: int,
+    n_neg: int,
+    strategy: str,
+    n_items: int,
+    Rpos_all_csr: csr_matrix,
+    item_popularity: Optional[np.ndarray] = None,
+    scores: Optional[np.ndarray] = None,
+    Fi_csr: Optional[csr_matrix] = None,
+    Rpos_train_csr: Optional[csr_matrix] = None,
+) -> np.ndarray:
+    """Sample negatives using specified strategy."""
+    # Get items to exclude for this user
+    excluded = get_excluded_items(user_idx, Rpos_all_csr)
 
+    # Random sampling
+    if strategy == "random":
+        return sample_random_negatives(n_neg, n_items, excluded)
 
-def get_time_weighting(
-        x: int,
-        datetime_min: datetime,
-        datetime_max: datetime,
-        scaling_days: int = -1
-) -> float:
-    """Get time weigting"""
-    time_min = datetime_min.timestamp()
-    time_max = datetime_max.timestamp()
-    bool_min = (x > time_min).astype(float)
-    bool_max = (x < time_max).astype(float)
-    out_val = np.multiply(bool_min, bool_max)
-    scale = timedelta(days=scaling_days).total_seconds()
-    time_middle = int((time_min+time_max)/2)
-    wgts = expit((x-time_middle)/scale)
-    out_val = np.multiply(wgts, out_val)
-    return out_val
+    # Popularity-weighted sampling
+    elif strategy == "popular":
+        if item_popularity is None:
+            raise ValueError("item_popularity required")
+        return sample_popular_negatives(
+            n_neg, n_items, excluded, item_popularity
+        )
 
-# viewed not clicked at the time of click is more important
-# clicked not ordered at the time of order is more important
-# further way to narrow your negative sampling space
+    # Similarity-based sampling
+    elif strategy == "similar":
+        if Fi_csr is None or Rpos_train_csr is None:
+            raise ValueError("Fi_csr, Rpos_train_csr required")
+        return sample_similar_negatives(
+            user_idx, n_neg, n_items, excluded,
+            Fi_csr, Rpos_train_csr
+        )
+
+    # Model-based sampling (hard negatives)
+    elif strategy == "model_based":
+        if scores is None:
+            raise ValueError("scores required")
+        return sample_model_based_negatives(
+            n_neg, n_items, excluded, scores
+        )
+
+    # Stratified sampling (mixed difficulty)
+    elif strategy == "stratified":
+        if item_popularity is None or scores is None:
+            raise ValueError("item_popularity and scores required")
+        return sample_stratified_negatives(
+            n_neg, n_items, excluded, item_popularity, scores
+        )
+
+    else:
+        raise ValueError(f"Unknown strategy: {strategy}")

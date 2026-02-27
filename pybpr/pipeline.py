@@ -4,12 +4,12 @@ import yaml
 import torch
 import itertools
 import logging
-import multiprocessing as mp
 from functools import partial
 from typing import Dict, List, Any, Optional, Callable
 
 import mlflow
 from mlflow.entities import Run
+from pathos.multiprocessing import ProcessPool, cpu_count
 
 from .recommender import RecommendationSystem
 from .interaction_data import UserItemData
@@ -84,7 +84,7 @@ class TrainingPipeline:
 
     def get_optimizer(
         self, optimizer_name: str, **kwargs
-    ) -> partial:
+    ) -> partial[torch.optim.Optimizer]:
         """Get optimizer by name with parameters."""
         # Map optimizer names to torch classes
         optimizer_map = {
@@ -220,26 +220,29 @@ class TrainingPipeline:
             optimizer_name, **optimizer_params
         )
 
-        # Build RecommendationSystem with raw matrices
+        # Split data into train/test
         print(f"Starting training: {run_name}", flush=True)
-        device = torch.device(
-            'cuda' if torch.cuda.is_available()
-            else 'cpu'
+        train_ratio = self.cfg.get('data.train_ratio_pos', 0.8)
+        ui.split_train_test(
+            train_ratio=train_ratio,
+            random_state=self.cfg.get('data.random_state', None)
         )
-        train_ratio = self.cfg.get(
-            'data.train_ratio_pos', 0.8
+
+        # Build RecommendationSystem
+        device = torch.device(
+            'cuda' if torch.cuda.is_available() else 'cpu'
+        )
+        eval_auc_neg_ratio = self.cfg.get(
+            'training.eval_auc_neg_ratio', 100.0
         )
         recommender = RecommendationSystem(
-            Rpos=ui.Rpos,
-            Rneg=ui.Rneg,
-            Fu=ui.Fu,
-            Fi=ui.Fi,
+            user_item_data=ui,
             model=model,
             optimizer=optimizer,
             loss_function=loss_fn,
             device=device,
             mlflow_run=mlflow_run,
-            train_ratio=train_ratio,
+            eval_auc_neg_ratio=eval_auc_neg_ratio,
         )
 
         # Train the model
@@ -295,7 +298,7 @@ class TrainingPipeline:
         print(f"Running {len(all_params)} experiments in grid search")
 
         # Auto-configure multiprocessing for optimal performance
-        total_cores = mp.cpu_count()
+        total_cores = cpu_count()
 
         # Determine number of parallel processes
         if num_processes is None:
@@ -326,11 +329,11 @@ class TrainingPipeline:
 
         # Run experiments in parallel with progress tracking
         print("Starting experiments...", flush=True)
-        with mp.Pool(processes=num_processes) as pool:
-            # Use imap_unordered for progress tracking
+        with ProcessPool(nodes=num_processes) as pool:
+            # Use uimap (unordered imap) for progress tracking
             results = []
             for i, result in enumerate(
-                pool.imap_unordered(run_single, all_params), 1
+                pool.uimap(run_single, all_params), 1
             ):
                 results.append(result)
                 print(
@@ -446,7 +449,6 @@ class TrainingPipeline:
             'model': {
                 'n_latent': 64,
                 'use_user_bias': True,
-                'use_item_bias': True,
                 'use_global_bias': True,
                 'dropout': 0.0,
                 'activation': None,
@@ -462,7 +464,8 @@ class TrainingPipeline:
                 'n_iter': 100,
                 'batch_size': 1000,
                 'eval_every': 5,
-                'eval_user_size': None,
+                'eval_user_size': None,  # None = all users
+                'eval_auc_neg_ratio': 1.0,
                 'early_stopping_patience': 10,
                 'log_level': 1
             },

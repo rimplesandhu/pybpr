@@ -49,7 +49,7 @@ class HybridMF(nn.Module):
         self.n_user_features = n_user_features
         self.n_item_features = n_item_features
         self.dropout = dropout
-        self.init_std = init_std or (1.0 / n_latent)
+        self.init_std = init_std or 0.1
         self.use_user_bias = use_user_bias
         self.use_global_bias = use_global_bias
 
@@ -229,52 +229,83 @@ class HybridMF(nn.Module):
         self,
         user_features: Union[torch.Tensor, sp.spmatrix],
         item_features: Union[torch.Tensor, sp.spmatrix],
+        item_batch_size: Optional[int] = None,
     ) -> torch.Tensor:
-        """Predict ratings for all users and all items at once.
+        """Predict ratings with optional item batching.
 
         Args:
-            user_features: Sparse tensor or scipy sparse matrix
+            user_features: Sparse/dense or scipy sparse matrix
                 (n_users, n_user_features)
-            item_features: Sparse tensor or scipy sparse matrix
+            item_features: Sparse/dense or scipy sparse matrix
                 (n_items, n_item_features)
+            item_batch_size: Batch size for items (None = no batching)
 
         Returns:
             Prediction matrix of shape (n_users, n_items)
         """
-        with torch.no_grad():  # Inference mode for efficiency
-            # Get latent representations
-            user_latent = self._safe_sparse_mm(
-                user_features, self.user_latent.weight
-            )  # (n_users, n_latent)
-            item_latent = self._safe_sparse_mm(
-                item_features, self.item_latent.weight
-            )  # (n_items, n_latent)
+        with torch.no_grad():
+            # Get number of items
+            n_items = (
+                item_features.shape[0] if sp.issparse(item_features)
+                else item_features.size(0)
+            )
 
-            # Apply activation if specified
-            if self.activation is not None:
-                user_latent = self.activation(user_latent)
-                item_latent = self.activation(item_latent)
+            # Batch items for large catalogs
+            if item_batch_size is not None and n_items > item_batch_size:
+                all_preds = []
+                for i in range(0, n_items, item_batch_size):
+                    batch_end = min(i + item_batch_size, n_items)
+                    batch_items = item_features[i:batch_end, :]
+                    batch_preds = self._predict_unbatched(
+                        user_features, batch_items
+                    )
+                    all_preds.append(batch_preds)
+                return torch.cat(all_preds, dim=1)
+            else:
+                # Single batch prediction
+                return self._predict_unbatched(
+                    user_features, item_features
+                )
 
-            # Compute predictions matrix through latent interactions
-            predictions = user_latent @ item_latent.t()  # (n_users, n_items)
+    def _predict_unbatched(
+        self,
+        user_features: Union[torch.Tensor, sp.spmatrix],
+        item_features: Union[torch.Tensor, sp.spmatrix],
+    ) -> torch.Tensor:
+        """Internal unbatched prediction logic."""
+        # Get latent representations
+        user_latent = self._safe_sparse_mm(
+            user_features, self.user_latent.weight
+        )
+        item_latent = self._safe_sparse_mm(
+            item_features, self.item_latent.weight
+        )
 
-            # Get item biases and add to predictions (broadcasting)
-            item_bias = self._safe_sparse_mm(
-                item_features, self.item_biases.weight
-            ).squeeze(-1)  # (n_items,)
-            predictions = predictions + item_bias.unsqueeze(0)
+        # Apply activation if specified
+        if self.activation is not None:
+            user_latent = self.activation(user_latent)
+            item_latent = self.activation(item_latent)
 
-            # Apply optional bias terms
-            if self.use_user_bias:
-                user_bias = self._safe_sparse_mm(
-                    user_features, self.user_biases.weight
-                ).squeeze(-1)  # (n_users,)
-                predictions = predictions + user_bias.unsqueeze(1)
+        # Compute predictions matrix via latent interactions
+        predictions = user_latent @ item_latent.t()
 
-            if self.use_global_bias:
-                predictions = predictions + self.global_bias
+        # Add item biases
+        item_bias = self._safe_sparse_mm(
+            item_features, self.item_biases.weight
+        ).squeeze(-1)
+        predictions = predictions + item_bias.unsqueeze(0)
 
-            return predictions
+        # Add optional bias terms
+        if self.use_user_bias:
+            user_bias = self._safe_sparse_mm(
+                user_features, self.user_biases.weight
+            ).squeeze(-1)
+            predictions = predictions + user_bias.unsqueeze(1)
+
+        if self.use_global_bias:
+            predictions = predictions + self.global_bias
+
+        return predictions
 
     def get_embeddings(self) -> Tuple[torch.Tensor, torch.Tensor]:
         """Get the learned user and item embeddings.

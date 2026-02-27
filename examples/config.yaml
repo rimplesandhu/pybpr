@@ -5,7 +5,6 @@
 model:
   n_latent: 64                    # Latent factors/dimensions
   use_user_bias: true             # User bias terms
-  use_item_bias: true             # Item bias terms
   use_global_bias: true           # Global bias term
   dropout: 0.0                    # Dropout rate
   activation: null                # Activation ('relu', 'tanh', 'sigmoid')
@@ -13,25 +12,26 @@ model:
 
 # Optimizer
 optimizer:
-  name: 'Adam'                    # 'Adam', 'SGD', 'AdamW', 'RMSprop'
-  lr: 0.0001                        # Learning rate
-  weight_decay: 0.0               # L2 regularization
+  name: 'Adam'                     # 'Adam', 'SGD', 'AdamW', 'RMSprop'
+  lr: 0.001                        # Learning rate
+  weight_decay: 0.0001               # L2 regularization
 
 # Training
 training:
   loss_function: 'bpr_loss'       # Loss function
-  n_iter: 10000                     # Training iterations
-  batch_size: 500                # Batch size
-  eval_every: 100                   # Evaluation frequency
+  n_iter: 400                     # Training iterations
+  batch_size: 100                # Batch size
+  eval_every: 10                   # Evaluation frequency
   eval_user_size: null            # Users to evaluate (null = all)
-  early_stopping_patience: 200     # Early stopping patience
+  eval_auc_neg_ratio: -1          # AUC neg ratio: -1=all items, 1.0=same
+  early_stopping_patience: 1000     # Early stopping patience
   log_level: 1                    # Logging verbosity
 
 # Data processing
 data:
-  item_feature: 'metadata'        # 'metadata', 'indicator', 'both'
+  item_feature: 'indicator'        # 'metadata', 'indicator', 'both'
   train_ratio_pos: 0.8            # Positive train ratio
-  train_ratio_neg: 0.8           # Negative train ratio (0.0=test only)
+  train_ratio_neg: 0.0           # Negative train ratio (0.0=test only)
 
 # MLflow
 mlflow:

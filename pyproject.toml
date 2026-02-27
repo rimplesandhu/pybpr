@@ -30,6 +30,7 @@ dependencies = [
     "mlflow",
     "joblib",
     "pyyaml",
+    "pathos",
 ]
 
 [build-system]

@@ -47,6 +47,12 @@ class UserItemData:
         self._Fu = sp.coo_matrix((0, 0), dtype=dtype)
         self._Fi = sp.coo_matrix((0, 0), dtype=dtype)
 
+        # Train/test split matrices (None until split)
+        self.Rpos_train = None
+        self.Rpos_test = None
+        self.Rneg_train = None
+        self.Rneg_test = None
+
         # ID to index mappings: (id_to_idx, idx_to_id)
         self._id_to_idx_mappings = {
             'user': (dict(), dict()),
@@ -658,3 +664,43 @@ class UserItemData:
     def Fi(self) -> sp.coo_matrix:
         """Get item features matrix."""
         return self._Fi
+
+    def split_train_test(
+        self,
+        train_ratio: float = 0.8,
+        random_state: Optional[int] = None
+    ) -> None:
+        """Split interactions into train and test sets.
+
+        Args:
+            train_ratio: Fraction of data for training
+            random_state: Random seed for reproducibility
+        """
+        from .utils import split_sparse_coo_matrix
+
+        # Split positive interactions
+        self.Rpos_train, self.Rpos_test = (
+            split_sparse_coo_matrix(
+                self._Rpos, train_ratio, random_state
+            )
+        )
+
+        # Split negative interactions
+        if self._Rneg.nnz > 0:
+            self.Rneg_train, self.Rneg_test = (
+                split_sparse_coo_matrix(
+                    self._Rneg, train_ratio, random_state
+                )
+            )
+        else:
+            # Empty negative matrices
+            shape = self._Rpos.shape
+            self.Rneg_train = sp.coo_matrix(
+                shape, dtype=self.dtype
+            )
+            self.Rneg_test = sp.coo_matrix(
+                shape, dtype=self.dtype
+            )
+
+        if self.verbose:
+            print(f"Split data: train_ratio={train_ratio}")
